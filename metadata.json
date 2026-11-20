@@ -1,0 +1,6 @@
+{
+  "name": "Mercy Ward 7",
+  "description": "A tense 3D single-player hospital survival horror escape game. Search decaying wards for keys and tools, avoid the patrolling threat, and unlock the exit.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
