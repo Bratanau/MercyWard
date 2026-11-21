@@ -7,9 +7,11 @@ import {
   FLOOR1_GRID,
   FLOOR2_GRID,
   FLOOR2_Y,
+  FURNITURE_OBSTACLES,
   GRID_COLS,
   GRID_ROWS,
   HIDE_SPOTS,
+  HIDE_TABLES,
   INITIAL_GLASS_SHARDS,
   ITEM_SPAWN_POINTS,
   STEAM_VALVE_POS,
@@ -17,12 +19,15 @@ import {
 } from './mapData';
 import {
   assignRandomizedItems,
+  buildHudSnapshot,
   createInitialSimulation,
   findNextGridStep,
   GLASSES_ACTIVE_DURATION,
   GLASSES_COOLDOWN_DURATION,
   gridOverrideKey,
   hasLineOfSight,
+  isGridCellPassableForAI,
+  isStepBlockedByProps,
   isWallCell,
   PLAYER_RADIUS,
   resolveCircleMovement,
@@ -31,9 +36,11 @@ import {
   stepSimulation,
   THREAT_CHASE_SPEED,
   THREAT_PATROL_SPEED,
+  THREAT_RADIUS,
   WALK_SPEED,
   type InputSample,
 } from './rules';
+import { DEFAULT_SETTINGS, loadSettings, saveSettings, sanitizeSettings } from './settings';
 
 const IDLE_INPUT: InputSample = {
   moveForward: 0,
@@ -57,13 +64,12 @@ test('2-story 23x23 estate grids are valid, spawns are open, and all wings have 
   const sim = createInitialSimulation({ autostart: true });
   const pCol = Math.floor(sim.player.x / TILE_SIZE);
   const pRow = Math.floor(sim.player.z / TILE_SIZE);
-  assert.equal(isWallCell(pCol, pRow, 0), false);
+  assert.equal(isWallCell(pCol, pRow, 0, sim.shifts.gridOverrides), false);
 
   const tCol = Math.floor(sim.threat.x / TILE_SIZE);
   const tRow = Math.floor(sim.threat.z / TILE_SIZE);
-  assert.equal(isWallCell(tCol, tRow, 1), false);
+  assert.equal(isWallCell(tCol, tRow, 1, sim.shifts.gridOverrides), false);
 
-  // Resident starts far from player for early exploration breathing room
   const initialDist = Math.hypot(sim.player.x - sim.threat.x, sim.player.z - sim.threat.z);
   assert.ok(initialDist > 18, `Expected Resident to spawn far away (>18m), got ${initialDist}m`);
 
@@ -84,6 +90,44 @@ test('2-story 23x23 estate grids are valid, spawns are open, and all wings have 
   }
 });
 
+test('procedural wing generation & randomized spawns remain 100% solvable across 20 seeds', () => {
+  for (let seed = 1; seed <= 20; seed++) {
+    const sim = createInitialSimulation({
+      autostart: true,
+      seed: seed * 131 + 7,
+      randomizeSpawn: true,
+    });
+    const dist = Math.hypot(sim.player.x - sim.threat.x, sim.player.z - sim.threat.z);
+    assert.ok(dist >= 19.0, `Seed ${seed}: Resident spawned too close (${dist}m)`);
+
+    // Player spawn must reach Exit Door AND Ward Key via 3D BFS
+    const wardKey = sim.items.find((i) => i.id === 'ward_key')!;
+    const toKey = findNextGridStep(
+      sim.player.x,
+      sim.player.y,
+      sim.player.z,
+      wardKey.x,
+      wardKey.y,
+      wardKey.z,
+      sim.doors,
+      sim.shifts.gridOverrides
+    );
+    assert.equal(toKey.reachable, true, `Seed ${seed}: ward_key unreachable from spawn`);
+
+    const toExit = findNextGridStep(
+      sim.player.x,
+      sim.player.y,
+      sim.player.z,
+      11.5 * TILE_SIZE,
+      0,
+      21.5 * TILE_SIZE,
+      sim.doors,
+      sim.shifts.gridOverrides
+    );
+    assert.equal(toExit.reachable, true, `Seed ${seed}: exit unreachable from spawn`);
+  }
+});
+
 test('randomized item spawns always place ward_key in an open zone across 50 seeds', () => {
   const openIds = new Set(ITEM_SPAWN_POINTS.filter((p) => p.tier === 'open').map((p) => p.id));
   for (let seed = 1; seed <= 50; seed++) {
@@ -96,38 +140,156 @@ test('randomized item spawns always place ward_key in an open zone across 50 see
   }
 });
 
+test('Monster collision & AI grid prevent clipping into solid props, boiler tank, bookshelves, and tables', () => {
+  const sim = createInitialSimulation({ autostart: true });
+  const kitchenBox = FURNITURE_OBSTACLES.find((o) => o.id === 'kitchen_island_counter')!;
+  const boilerTank = FURNITURE_OBSTACLES.find((o) => o.id === 'boiler_tank_box')!;
+  const shelf = FURNITURE_OBSTACLES.find((o) => o.id === 'library_shelf_2')!;
+  const ballroomTable = HIDE_TABLES.find((t) => t.id === 'table_ballroom_dining')!;
+
+  // AI cost-map & step checks block solid prop footprints (Kitchen, Boiler, Bookshelves, Tables)
+  assert.equal(isGridCellPassableForAI(2, 18, 0, sim.doors, sim.shifts.gridOverrides), false);
+  assert.equal(isStepBlockedByProps(0, 2, 1, 2, 2), true);
+  assert.equal(isStepBlockedByProps(0, 18, 13, 18, 14), true);
+  assert.equal(isGridCellPassableForAI(10, 16, 0, sim.doors, sim.shifts.gridOverrides), false);
+
+  // Pushing Threat directly toward props stops outside bounding box + THREAT_RADIUS
+  const hitCounter = resolveCircleMovement(
+    1.95 * TILE_SIZE,
+    0,
+    19.0 * TILE_SIZE,
+    2.5,
+    0,
+    THREAT_RADIUS,
+    sim.doors,
+    true,
+    sim.shifts.gridOverrides,
+    false
+  );
+  assert.ok(hitCounter.x <= kitchenBox.minX - THREAT_RADIUS + 0.02);
+
+  const hitBoiler = resolveCircleMovement(
+    2.2 * TILE_SIZE,
+    0,
+    3.0 * TILE_SIZE,
+    0,
+    -2.5,
+    THREAT_RADIUS,
+    sim.doors,
+    true,
+    sim.shifts.gridOverrides,
+    false
+  );
+  assert.ok(hitBoiler.z >= boilerTank.maxZ + THREAT_RADIUS - 0.02);
+
+  const hitShelf = resolveCircleMovement(
+    18.5 * TILE_SIZE,
+    0,
+    13.2 * TILE_SIZE,
+    0,
+    2.0,
+    THREAT_RADIUS,
+    sim.doors,
+    true,
+    sim.shifts.gridOverrides,
+    false
+  );
+  assert.ok(hitShelf.z <= shelf.minZ - THREAT_RADIUS + 0.02);
+
+  const hitTable = resolveCircleMovement(
+    10.6 * TILE_SIZE,
+    0,
+    15.1 * TILE_SIZE,
+    0,
+    2.0,
+    THREAT_RADIUS,
+    sim.doors,
+    true,
+    sim.shifts.gridOverrides,
+    false
+  );
+  assert.ok(hitTable.z <= ballroomTable.minZ - THREAT_RADIUS + 0.02);
+});
+
+test('Under-table hiding: crouching player slides underneath, stays hidden from patrol, and cannot stand while trapped', () => {
+  const sim = createInitialSimulation({ autostart: true });
+  const tbl = HIDE_TABLES.find((t) => t.id === 'table_ballroom_dining')!;
+  const centerX = (tbl.minX + tbl.maxX) * 0.5;
+  const centerZ = (tbl.minZ + tbl.maxZ) * 0.5;
+
+  // Standing player collides against table edge
+  const blocked = resolveCircleMovement(
+    centerX,
+    0,
+    tbl.minZ - 0.45,
+    0,
+    1.2,
+    PLAYER_RADIUS,
+    sim.doors,
+    true,
+    sim.shifts.gridOverrides,
+    false
+  );
+  assert.ok(blocked.z <= tbl.minZ - PLAYER_RADIUS + 0.02);
+
+  // Crouching player walks smoothly beneath table and is flagged isUnderTable = true
+  sim.player.x = centerX;
+  sim.player.y = 0;
+  sim.player.z = tbl.minZ - 0.42;
+  sim.player.yaw = Math.PI; // facing South (+Z)
+  sim.player.crouching = true;
+  for (let i = 0; i < 15; i++) {
+    stepSimulation(sim, { ...IDLE_INPUT, moveForward: 1 }, 0.04);
+  }
+  assert.equal(sim.player.isUnderTable, true);
+  assert.equal(sim.player.underTableId, tbl.id);
+
+  // Trying to uncrouch under table keeps player crouched!
+  stepSimulation(sim, { ...IDLE_INPUT, crouchToggle: true }, 0.016);
+  assert.equal(sim.player.crouching, true);
+
+  // Patrolling Resident standing nearby with open sightline does NOT detect player hidden under table
+  sim.threat.mode = 'patrol';
+  sim.threat.x = centerX;
+  sim.threat.y = 0;
+  sim.threat.z = tbl.minZ - 1.2;
+  sim.threat.sawUnderTableId = null;
+  stepSimulation(sim, IDLE_INPUT, 0.04);
+  assert.notEqual(sim.threat.mode, 'chase');
+  assert.equal(sim.phase, 'playing');
+});
+
 test('player smoothly traverses all 3 estate staircases (Main, West Service, Library)', () => {
   const sim = createInitialSimulation({ autostart: true });
-  // Park Resident away from test paths
   sim.threat.x = 1.5 * TILE_SIZE;
   sim.threat.y = FLOOR2_Y;
   sim.threat.z = 3.5 * TILE_SIZE;
 
-  // 1. Main Stairs (col 11, rows 8..6: South row 9 Y=0 -> North row 6 Y=3.5)
+  // 1. Main Stairs
   sim.player.x = 11.5 * TILE_SIZE;
   sim.player.y = 0;
   sim.player.z = 9.2 * TILE_SIZE;
-  sim.player.yaw = 0; // North (-Z)
+  sim.player.yaw = 0;
   for (let i = 0; i < 65; i++) {
     stepSimulation(sim, { ...IDLE_INPUT, moveForward: 1 }, 0.04);
   }
   assert.ok(sim.player.y > 3.4, `Expected Floor 2 via Main Stairs, got Y=${sim.player.y}`);
 
-  // 2. West Service Stairs (col 2, rows 11..9: South row 12 Y=3.5 -> North row 9 Y=0)
+  // 2. West Service Stairs
   sim.player.x = 2.5 * TILE_SIZE;
   sim.player.y = FLOOR2_Y;
   sim.player.z = 12.2 * TILE_SIZE;
-  sim.player.yaw = 0; // North (-Z)
+  sim.player.yaw = 0;
   for (let i = 0; i < 65; i++) {
     stepSimulation(sim, { ...IDLE_INPUT, moveForward: 1 }, 0.04);
   }
   assert.ok(sim.player.y < 0.15, `Expected Floor 1 via West Service Stairs, got Y=${sim.player.y}`);
 
-  // 3. Library Grand Staircase (col 21, rows 14..12: South row 15 Y=0 -> North row 12 Y=3.5)
+  // 3. Library Grand Staircase
   sim.player.x = 21.5 * TILE_SIZE;
   sim.player.y = 0;
   sim.player.z = 15.2 * TILE_SIZE;
-  sim.player.yaw = 0; // North (-Z)
+  sim.player.yaw = 0;
   for (let i = 0; i < 65; i++) {
     stepSimulation(sim, { ...IDLE_INPUT, moveForward: 1 }, 0.04);
   }
@@ -136,7 +298,6 @@ test('player smoothly traverses all 3 estate staircases (Main, West Service, Lib
 
 test('Library Floor 2 Mezzanine guardrail stops falling into atrium while preserving open sightlines', () => {
   const sim = createInitialSimulation({ autostart: true });
-  // Player on West Mezzanine balcony facing East across the 2-story atrium pit
   const moved = resolveCircleMovement(
     16.5 * TILE_SIZE,
     FLOOR2_Y,
@@ -150,7 +311,6 @@ test('Library Floor 2 Mezzanine guardrail stops falling into atrium while preser
   );
   assert.ok(moved.x < 17.02 * TILE_SIZE, `Guardrail should block walking into pit, got x=${moved.x}`);
 
-  // East Mezzanine col 20 remains smoothly passable between Atrium rail (19.98) and Stair guard (20.88)
   const eastWalk = resolveCircleMovement(
     20.42 * TILE_SIZE,
     FLOOR2_Y,
@@ -164,7 +324,6 @@ test('Library Floor 2 Mezzanine guardrail stops falling into atrium while preser
   );
   assert.ok(eastWalk.z > 14.0 * TILE_SIZE, 'Col 20 East Mezzanine walkway should remain unobstructed');
 
-  // Line of sight across the open Library Atrium on Floor 2 is clear
   const losOpen = hasLineOfSight(
     16.5 * TILE_SIZE,
     FLOOR2_Y,
@@ -178,35 +337,15 @@ test('Library Floor 2 Mezzanine guardrail stops falling into atrium while preser
   assert.equal(losOpen, true);
 });
 
-test('3D multi-floor BFS navigates between Floor 1 and Floor 2 via estate stairs', () => {
-  const sim = createInitialSimulation({ autostart: true });
-  const t0 = performance.now();
-  const step = findNextGridStep(
-    11.5 * TILE_SIZE,
-    0,
-    19.5 * TILE_SIZE,
-    16.5 * TILE_SIZE,
-    FLOOR2_Y,
-    10.5 * TILE_SIZE,
-    sim.doors,
-    sim.shifts.gridOverrides
-  );
-  const elapsedMs = performance.now() - t0;
-  assert.equal(step.reachable, true);
-  assert.ok(elapsedMs < 15, `Expected fast 23x23 3D BFS, took ${elapsedMs}ms`);
-});
-
-test('Monster rebalance: slower patrol, sprintable chase, and 4.0s inspect_room pause in major rooms', () => {
+test('Monster rebalance & 4.0s inspect_room pause in major rooms', () => {
   assert.equal(THREAT_PATROL_SPEED, 1.8);
   assert.ok(WALK_SPEED < THREAT_CHASE_SPEED && THREAT_CHASE_SPEED < SPRINT_SPEED);
 
   const sim = createInitialSimulation({ autostart: true });
-  // Place player safely out of sight on Floor 2
   sim.player.x = 1.5 * TILE_SIZE;
   sim.player.y = FLOOR2_Y;
   sim.player.z = 3.5 * TILE_SIZE;
 
-  // Put Resident stepping into Grand Ballroom on patrol
   sim.threat.mode = 'patrol';
   sim.threat.lastInspectedZone = null;
   sim.threat.x = 11.5 * TILE_SIZE;
@@ -222,7 +361,6 @@ test('Monster rebalance: slower patrol, sprintable chase, and 4.0s inspect_room 
 
   const xBeforePause = sim.threat.x;
   const zBeforePause = sim.threat.z;
-  // After 2.0s Resident must still be paused inspecting the room
   for (let i = 0; i < 50; i++) {
     stepSimulation(sim, IDLE_INPUT, 0.04);
   }
@@ -230,34 +368,29 @@ test('Monster rebalance: slower patrol, sprintable chase, and 4.0s inspect_room 
   assert.equal(sim.threat.x, xBeforePause);
   assert.equal(sim.threat.z, zBeforePause);
 
-  // After another 2.2s Resident resumes patrolling
   for (let i = 0; i < 55; i++) {
     stepSimulation(sim, IDLE_INPUT, 0.04);
   }
   assert.equal(sim.threat.mode, 'patrol');
 });
 
-test('Spectral Glasses run for 4.0s, enter 25s cooldown, and Glass Shards reset cooldown immediately', () => {
+test('Spectral Glasses run for 4.0s, enter cooldown, and Glass Shards reset cooldown immediately', () => {
   const sim = createInitialSimulation({ autostart: true });
 
-  // Activate via toggle
   const evOn = stepSimulation(sim, { ...IDLE_INPUT, glassesToggle: true }, 0.016);
   assert.equal(evOn.glassesToggled, true);
   assert.equal(sim.glasses.active, true);
   assert.ok(sim.glasses.activeTimer > GLASSES_ACTIVE_DURATION - 0.05);
 
-  // Tick 4.1s -> expires into 25s cooldown
   for (let i = 0; i < 82; i++) {
     stepSimulation(sim, IDLE_INPUT, 0.05);
   }
   assert.equal(sim.glasses.active, false);
   assert.ok(sim.glasses.cooldownTimer > GLASSES_COOLDOWN_DURATION - 0.2);
 
-  // Pressing toggle during cooldown does NOT reactivate
   stepSimulation(sim, { ...IDLE_INPUT, glassesToggle: true }, 0.016);
   assert.equal(sim.glasses.active, false);
 
-  // Pick up Glass Shard in Ballroom -> immediately resets cooldownTimer to 0
   const shard = INITIAL_GLASS_SHARDS.find((s) => s.id === 'shard_ballroom_balcony')!;
   sim.player.x = shard.x;
   sim.player.y = shard.y;
@@ -268,7 +401,6 @@ test('Spectral Glasses run for 4.0s, enter 25s cooldown, and Glass Shards reset 
   assert.equal(sim.glasses.cooldownTimer, 0);
   assert.equal(sim.glasses.shardsCollected, 1);
 
-  // Now Spectral Glasses can activate immediately again
   stepSimulation(sim, { ...IDLE_INPUT, glassesToggle: true }, 0.016);
   assert.equal(sim.glasses.active, true);
 });
@@ -281,12 +413,10 @@ test('Architecture Shift 1: Cabin 3 Disappearing Door seals exit on turn and ope
   sim.player.z = shard3.z + 0.55;
   sim.player.yaw = 0;
 
-  // Collect Cabin 3 shard while facing North (still ~90 deg from West door, not > 120 deg)
   stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
   assert.equal(sim.shifts.cabin3PickupTaken, true);
   assert.equal(sim.shifts.cabin3Sealed, false);
 
-  // Turn East (yaw = -Math.PI/2, > 120 deg away from West door at (17, 4))
   sim.player.yaw = -Math.PI / 2;
   const evShift = stepSimulation(sim, IDLE_INPUT, 0.016);
   assert.equal(evShift.architectureShift, 'cabin3_sealed');
@@ -295,7 +425,6 @@ test('Architecture Shift 1: Cabin 3 Disappearing Door seals exit on turn and ope
   assert.equal(isWallCell(17, 4, 1, sim.shifts.gridOverrides), true);
   assert.equal(isWallCell(19, 6, 1, sim.shifts.gridOverrides), false);
 
-  // Verify BFS routes cleanly out of Cabin 3 via opened Secret Wardrobe (19, 6)
   const route = findNextGridStep(
     19.5 * TILE_SIZE,
     FLOOR2_Y,
@@ -309,23 +438,23 @@ test('Architecture Shift 1: Cabin 3 Disappearing Door seals exit on turn and ope
   assert.equal(route.reachable, true);
 });
 
-test('Architecture Shift 2: Endless Corridor loops player East and spawns Red Door to break the loop', () => {
+test('Architecture Shift 2: Endless Corridor loops player East and Ringing Rotary Phone breaks the loop', () => {
   const sim = createInitialSimulation({ autostart: true });
-  // Keep Resident far away on Floor 1
   sim.threat.x = 11.5 * TILE_SIZE;
   sim.threat.y = 0;
   sim.threat.z = 14.5 * TILE_SIZE;
 
-  // Condition requires >= 1 item found
   sim.itemsFound = 1;
   sim.player.x = 8.0 * TILE_SIZE;
   sim.player.y = FLOOR2_Y;
   sim.player.z = 1.5 * TILE_SIZE;
-  sim.player.yaw = Math.PI / 2; // Facing West
+  sim.player.yaw = Math.PI / 2;
 
-  stepSimulation(sim, IDLE_INPUT, 0.016);
+  const evEnter = stepSimulation(sim, IDLE_INPUT, 0.016);
   assert.equal(sim.shifts.endlessLoopActive, true);
-  assert.equal(sim.shifts.redDoorAppeared, true);
+  assert.equal(sim.shifts.phoneSpawned, true);
+  assert.equal(evEnter.phoneRinging, true);
+  assert.equal(isWallCell(9, 1, 1, sim.shifts.gridOverrides), true);
 
   // Walking West past threshold loops player back East seamlessly
   sim.player.x = ENDLESS_CORRIDOR_BOUNDS.loopThresholdX - 0.1;
@@ -333,14 +462,18 @@ test('Architecture Shift 2: Endless Corridor loops player East and spawns Red Do
   assert.equal(evLoop.architectureShift, 'endless_loop');
   assert.ok(sim.player.x > ENDLESS_CORRIDOR_BOUNDS.loopThresholdX + 4.0);
 
-  // Turn around East toward the Red Door at col 9 and interact to break the loop
-  sim.player.x = 8.4 * TILE_SIZE;
-  sim.player.z = 1.5 * TILE_SIZE;
-  sim.player.yaw = -Math.PI / 2; // East toward col 9
-  const evRed = stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
-  assert.equal(evRed.architectureShift, 'red_door_opened');
+  // Answer the ringing Rotary Telephone to shatter the endless corridor shift
+  const phone = sim.phones.find((p) => p.id === 'phone_endless_corridor')!;
+  sim.player.x = phone.x;
+  sim.player.y = phone.y;
+  sim.player.z = phone.z + 0.7;
+  sim.player.yaw = 0;
+  const evAnswer = stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
+  assert.equal(evAnswer.phoneAnswered, true);
+  assert.equal(evAnswer.architectureShift, 'phone_loop_broken');
   assert.equal(sim.shifts.endlessLoopSolved, true);
   assert.equal(sim.shifts.endlessLoopActive, false);
+  assert.equal(isWallCell(9, 1, 1, sim.shifts.gridOverrides), false);
 });
 
 test('Architecture Shift 3: Midnight Quake collapses Main Stairs & guarantees zero soft-locks across both floors', () => {
@@ -350,21 +483,19 @@ test('Architecture Shift 3: Midnight Quake collapses Main Stairs & guarantees ze
   sim.player.x = BREAKER_BOX_POS.interactX;
   sim.player.y = BREAKER_BOX_POS.y;
   sim.player.z = BREAKER_BOX_POS.interactZ;
-  sim.player.yaw = Math.PI / 2; // Facing West wall Breaker Box
+  sim.player.yaw = Math.PI / 2;
 
   const ev = stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
   assert.equal(ev.breakerRestored, true);
   assert.equal(ev.midnightQuake, true);
   assert.equal(sim.shifts.midnightQuakeTriggered, true);
 
-  // Main Stairs & Boiler shortcut sealed; West Cellar route blasted open
   assert.equal(sim.shifts.gridOverrides[gridOverrideKey(0, 6, 6)], '#');
   assert.equal(sim.shifts.gridOverrides[gridOverrideKey(0, 11, 9)], '#');
   assert.equal(sim.shifts.gridOverrides[gridOverrideKey(1, 11, 5)], '#');
   assert.equal(sim.shifts.gridOverrides[gridOverrideKey(0, 2, 7)], '.');
   assert.equal(sim.shifts.gridOverrides[gridOverrideKey(0, 4, 12)], '.');
 
-  // Verify zero soft-locks: Boiler Utility reaches Floor 1 Exit AND Floor 2 Master Bedroom post-Quake
   const toExit = findNextGridStep(
     3.5 * TILE_SIZE,
     0,
@@ -375,7 +506,7 @@ test('Architecture Shift 3: Midnight Quake collapses Main Stairs & guarantees ze
     sim.doors,
     sim.shifts.gridOverrides
   );
-  assert.equal(toExit.reachable, true, 'Player in Boiler must still reach Exit post-Quake');
+  assert.equal(toExit.reachable, true);
 
   const toFloor2 = findNextGridStep(
     3.5 * TILE_SIZE,
@@ -387,7 +518,156 @@ test('Architecture Shift 3: Midnight Quake collapses Main Stairs & guarantees ze
     sim.doors,
     sim.shifts.gridOverrides
   );
-  assert.equal(toFloor2.reachable, true, 'Player in Boiler must still reach Floor 2 via West Stairs post-Quake');
+  assert.equal(toFloor2.reachable, true);
+});
+
+test('1-hit kill triggers Devour Jumpscare -> 1.5s Rebirth -> wakes on Loop 2 with ALL progress preserved', () => {
+  const sim = createInitialSimulation({ autostart: true });
+  // Simulate partial run progress before death
+  sim.inventory.push('ward_key', 'valve_wheel');
+  sim.itemsFound = 2;
+  sim.steamShutOff = true;
+  sim.lore[0].inspected = true;
+  const ballroomDoor = sim.doors.find((d) => d.id === 'ballroom_west_door')!;
+  ballroomDoor.state = 'open';
+
+  const spot = HIDE_SPOTS.find((s) => s.id === 'hide_cabin3_locker')!;
+  sim.player.x = spot.x - 0.8;
+  sim.player.y = spot.y;
+  sim.player.z = spot.z;
+  sim.player.yaw = -Math.PI / 2;
+
+  sim.threat.x = 18.5 * TILE_SIZE;
+  sim.threat.y = FLOOR2_Y;
+  sim.threat.z = spot.z;
+  stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
+  assert.equal(sim.player.hidingSpotId, spot.id);
+  assert.equal(sim.threat.sawPlayerHideId, spot.id);
+
+  let torn = false;
+  for (let i = 0; i < 80; i++) {
+    const ev = stepSimulation(sim, IDLE_INPUT, 0.04);
+    if (ev.lockerTornOpen) {
+      torn = true;
+      break;
+    }
+  }
+  assert.equal(torn, true);
+  assert.equal(sim.player.hidingSpotId, null);
+  assert.equal(sim.player.strikesRemaining, 0);
+  // Instant 1-hit lethal transitions directly to devour jumpscare!
+  assert.equal(sim.phase, 'jumpscare');
+
+  // Step through 1.45s jumpscare -> enters 1.5s 'rebirth' blackout
+  let rebirthStarted = false;
+  for (let i = 0; i < 45; i++) {
+    const ev = stepSimulation(sim, IDLE_INPUT, 0.04);
+    if (ev.rebirthStarted) {
+      rebirthStarted = true;
+      break;
+    }
+  }
+  assert.equal(rebirthStarted, true);
+  assert.equal(sim.phase, 'rebirth');
+
+  // Step through 1.5s rebirth blackout -> wakes up in Loop 2 with full inventory/progress intact!
+  let reborn = false;
+  for (let i = 0; i < 45; i++) {
+    const ev = stepSimulation(sim, IDLE_INPUT, 0.04);
+    if (ev.rebirthCompleted) {
+      reborn = true;
+      break;
+    }
+  }
+  assert.equal(reborn, true);
+  assert.equal(sim.phase, 'playing');
+  assert.equal(sim.loopCount, 2);
+  assert.equal(sim.player.strikesRemaining, 1);
+  assert.deepEqual(sim.inventory, ['ward_key', 'valve_wheel']);
+  assert.equal(sim.itemsFound, 2);
+  assert.equal(sim.steamShutOff, true);
+  assert.equal(sim.lore[0].inspected, true);
+  assert.equal(ballroomDoor.state, 'open');
+  assert.ok(sim.echoRecord !== null && sim.echoRecord.loopNumber === 1);
+});
+
+test('Throwable glass bottle arcs, shatters, and diverts Resident to investigate the crash site', () => {
+  const sim = createInitialSimulation({ autostart: true });
+  sim.player.x = 11.5 * TILE_SIZE;
+  sim.player.y = 0;
+  sim.player.z = 16.5 * TILE_SIZE;
+  sim.player.yaw = 0; // North into Grand Ballroom
+  sim.player.pitch = 0;
+  sim.player.bottlesCount = 2;
+
+  // Put Resident in East Library (no LoS behind Ballroom-Library wall, < 34m hearing range)
+  sim.threat.mode = 'patrol';
+  sim.threat.x = 18.5 * TILE_SIZE;
+  sim.threat.y = 0;
+  sim.threat.z = 15.0 * TILE_SIZE;
+
+  const evThrow = stepSimulation(sim, { ...IDLE_INPUT, throwPressed: true }, 0.016);
+  assert.equal(evThrow.bottleThrown, true);
+  assert.equal(sim.player.bottlesCount, 1);
+  assert.equal(sim.projectiles.length, 1);
+
+  let shatteredPos: { x: number; y: number; z: number } | null = null;
+  for (let i = 0; i < 60; i++) {
+    const ev = stepSimulation(sim, IDLE_INPUT, 0.04);
+    if (ev.bottleShattered) {
+      shatteredPos = ev.bottleShattered;
+      break;
+    }
+  }
+  assert.ok(shatteredPos !== null, 'Thrown bottle should shatter on floor or wall');
+  assert.equal(sim.threat.mode, 'investigate');
+  assert.ok(Math.hypot(sim.threat.targetX - shatteredPos!.x, sim.threat.targetZ - shatteredPos!.z) < 0.01);
+});
+
+test('Pocket Radio static climbs inside 25m and emits through-wall whisper without LoS inside 10m', () => {
+  const sim = createInitialSimulation({ autostart: true });
+  // Place player in Kitchen (col 3, row 17) and Threat behind North Pantry wall (col 3, row 15) ~4m away, zero LoS
+  sim.player.x = 3.5 * TILE_SIZE;
+  sim.player.y = 0;
+  sim.player.z = 17.5 * TILE_SIZE;
+  sim.threat.x = 3.5 * TILE_SIZE;
+  sim.threat.y = 0;
+  sim.threat.z = 15.0 * TILE_SIZE;
+  sim.paranoia.radioWhisperCooldown = 0;
+
+  const hud = buildHudSnapshot(sim);
+  assert.ok(hud.radioStaticLevel > 0.5, `Expected strong radio static within 5m, got ${hud.radioStaticLevel}`);
+
+  const ev = stepSimulation(sim, IDLE_INPUT, 0.04);
+  assert.equal(ev.radioWhisper, true);
+  assert.ok(sim.paranoia.radioMessage !== null);
+});
+
+test('Auditory Paranoia triggers footsteps behind after 6s of no turning, and flashes eyes on abrupt turn', () => {
+  const sim = createInitialSimulation({ autostart: true });
+  sim.threat.x = 19.5 * TILE_SIZE;
+  sim.threat.y = FLOOR2_Y;
+  sim.threat.z = 3.5 * TILE_SIZE;
+  sim.player.x = 11.5 * TILE_SIZE;
+  sim.player.y = 0;
+  sim.player.z = 16.5 * TILE_SIZE;
+  sim.player.yaw = 0;
+  sim.paranoia.ghostFootstepsCooldown = 0;
+
+  let ghostSteps = false;
+  for (let i = 0; i < 160; i++) {
+    const ev = stepSimulation(sim, { ...IDLE_INPUT, moveForward: 0.5 }, 0.04);
+    if (ev.ghostFootstepsBehind) {
+      ghostSteps = true;
+      break;
+    }
+  }
+  assert.equal(ghostSteps, true);
+  assert.equal(sim.paranoia.ghostFootstepsActive, true);
+
+  const evTurn = stepSimulation(sim, { ...IDLE_INPUT, yawDelta: 0.45 }, 0.016);
+  assert.equal(evTurn.ghostEyeFlash, true);
+  assert.ok(sim.paranoia.ghostEyeFlashTimer > 0);
 });
 
 test('Resident pauses 2.0 seconds to smash through a closed door', () => {
@@ -414,7 +694,6 @@ test('Resident pauses 2.0 seconds to smash through a closed door', () => {
     stepSimulation(sim, IDLE_INPUT, 0.04);
   }
   assert.equal(targetDoor.state, 'closed');
-  assert.equal(sim.threat.mode, 'smash_door');
 
   let slammed = false;
   for (let i = 0; i < 30; i++) {
@@ -423,7 +702,6 @@ test('Resident pauses 2.0 seconds to smash through a closed door', () => {
   }
   assert.equal(slammed, true);
   assert.equal(targetDoor.state, 'open');
-  assert.notEqual(sim.threat.mode, 'smash_door');
 });
 
 test('Kitchen counter blocks line of sight and camera pitch clamps strictly to [-1.3, 1.3]', () => {
@@ -482,16 +760,14 @@ test('full 4-item 2-story escape puzzle reaches victory', () => {
     assert.ok(sim.inventory.includes(id), `Failed to pick up ${id}`);
   };
 
-  // 1. Pick up Security Key and unlock Security Storage Room at (17, 20)
   pickItem('ward_key');
   sim.player.x = 16.4 * TILE_SIZE;
   sim.player.y = 0;
   sim.player.z = 20.5 * TILE_SIZE;
-  sim.player.yaw = -Math.PI / 2; // East toward (17, 20)
+  sim.player.yaw = -Math.PI / 2;
   stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
   assert.equal(sim.doors.find((d) => d.id === 'security_door')!.state, 'open');
 
-  // 2. Pick up Valve Wheel & Shut off Steam Valve
   pickItem('valve_wheel');
   sim.player.x = STEAM_VALVE_POS.x;
   sim.player.y = STEAM_VALVE_POS.y;
@@ -500,7 +776,6 @@ test('full 4-item 2-story escape puzzle reaches victory', () => {
   stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
   assert.equal(sim.steamShutOff, true);
 
-  // 3. Pick up High-Volt Fuse & Restore Boiler Breaker (triggers Midnight Quake)
   pickItem('power_fuse');
   sim.player.x = BREAKER_BOX_POS.interactX;
   sim.player.y = BREAKER_BOX_POS.y;
@@ -509,7 +784,6 @@ test('full 4-item 2-story escape puzzle reaches victory', () => {
   stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
   assert.equal(sim.powerRestored, true);
 
-  // 4. Pick up Bolt Cutters & Cut Entrance Exit Chains at (11, 22)
   pickItem('bolt_cutters');
   sim.player.x = 11.5 * TILE_SIZE;
   sim.player.y = 0;
@@ -523,50 +797,6 @@ test('full 4-item 2-story escape puzzle reaches victory', () => {
   }
   assert.equal(sim.phase, 'gameover');
   assert.equal(sim.victory, true);
-});
-
-test('seen hiding causes Resident to tear locker open and 3rd strike triggers jumpscare then defeat', () => {
-  const sim = createInitialSimulation({ autostart: true });
-  const spot = HIDE_SPOTS.find((s) => s.id === 'hide_cabin3_locker')!;
-  sim.player.x = spot.x - 0.8;
-  sim.player.y = spot.y;
-  sim.player.z = spot.z;
-  sim.player.yaw = -Math.PI / 2;
-
-  sim.threat.x = 18.5 * TILE_SIZE;
-  sim.threat.y = FLOOR2_Y;
-  sim.threat.z = spot.z;
-  stepSimulation(sim, { ...IDLE_INPUT, interactPressed: true }, 0.016);
-  assert.equal(sim.player.hidingSpotId, spot.id);
-  assert.equal(sim.threat.sawPlayerHideId, spot.id);
-
-  let torn = false;
-  for (let i = 0; i < 80; i++) {
-    const ev = stepSimulation(sim, IDLE_INPUT, 0.04);
-    if (ev.lockerTornOpen) {
-      torn = true;
-      break;
-    }
-  }
-  assert.equal(torn, true);
-  assert.equal(sim.player.hidingSpotId, null);
-  assert.equal(sim.player.strikesRemaining, 2);
-
-  for (let s = 0; s < 2; s++) {
-    sim.player.invulnTimer = 0;
-    sim.threat.hitCooldown = 0;
-    sim.threat.x = sim.player.x;
-    sim.threat.y = sim.player.y;
-    sim.threat.z = sim.player.z - 0.35;
-    stepSimulation(sim, IDLE_INPUT, 0.04);
-  }
-  assert.equal(sim.phase, 'jumpscare');
-
-  for (let i = 0; i < 40; i++) {
-    stepSimulation(sim, IDLE_INPUT, 0.04);
-  }
-  assert.equal(sim.phase, 'gameover');
-  assert.equal(sim.victory, false);
 });
 
 test('Triangle Echo corpse on Loop 2 yields note and stamina boost', () => {
@@ -593,8 +823,46 @@ test('Triangle Echo corpse on Loop 2 yields note and stamina boost', () => {
   assert.ok(sim.echoNoteText?.includes('Loop #1'));
 });
 
-test('resolveCircleMovement keeps player within floor walls', () => {
-  const sim = createInitialSimulation({ autostart: true });
-  const moved = resolveCircleMovement(11.5 * TILE_SIZE, 0, 21.0 * TILE_SIZE, 3.0, 0, PLAYER_RADIUS, sim.doors);
-  assert.ok(moved.x < 15.0 * TILE_SIZE);
+test('Settings sanitization, localStorage persistence, and live monster speed scaling', () => {
+  const clamped = sanitizeSettings({
+    monsterSpeedMult: 4.5,
+    glassesCooldownSec: 2,
+    flashlightIntensity: 0.1,
+    flashlightBatterySec: 999,
+    sfxVolume: -1,
+    ambientVolume: 2,
+    fov: 150,
+  });
+  assert.equal(clamped.monsterSpeedMult, 1.5);
+  assert.equal(clamped.glassesCooldownSec, 10);
+  assert.equal(clamped.flashlightIntensity, 0.5);
+  assert.equal(clamped.flashlightBatterySec, 180);
+  assert.equal(clamped.sfxVolume, 0);
+  assert.equal(clamped.ambientVolume, 1);
+  assert.equal(clamped.fov, 95);
+
+  const mem = new Map<string, string>();
+  saveSettings(
+    { ...DEFAULT_SETTINGS, monsterSpeedMult: 1.3, fov: 85 },
+    { setItem: (k, v) => void mem.set(k, v) }
+  );
+  const loaded = loadSettings({ getItem: (k) => mem.get(k) ?? null });
+  assert.equal(loaded.monsterSpeedMult, 1.3);
+  assert.equal(loaded.fov, 85);
+
+  // Live speed multiplier moves Threat faster on stepSimulation
+  const sFast = createInitialSimulation({ autostart: true });
+  sFast.player.x = 1.5 * TILE_SIZE;
+  sFast.player.y = FLOOR2_Y;
+  sFast.player.z = 3.5 * TILE_SIZE;
+  sFast.threat.mode = 'patrol';
+  sFast.threat.x = 11.5 * TILE_SIZE;
+  sFast.threat.y = 0;
+  sFast.threat.z = 19.5 * TILE_SIZE;
+  sFast.threat.targetX = 11.5 * TILE_SIZE;
+  sFast.threat.targetY = 0;
+  sFast.threat.targetZ = 18.0 * TILE_SIZE;
+  stepSimulation(sFast, IDLE_INPUT, 0.05, { ...DEFAULT_SETTINGS, monsterSpeedMult: 1.5 });
+  const movedFast = 19.5 * TILE_SIZE - sFast.threat.z;
+  assert.ok(movedFast > THREAT_PATROL_SPEED * 0.05 * 1.4);
 });

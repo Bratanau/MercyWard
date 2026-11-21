@@ -3,11 +3,16 @@ import {
   DoorSpec,
   FloorIndex,
   GlassShardRuntime,
+  HauntedMirrorSpec,
   HideSpotSpec,
+  HideTableSpec,
   ItemId,
   ItemMeta,
   ItemSpawnPoint,
+  LoreItemRuntime,
   ObstacleBox,
+  RotaryPhoneRuntime,
+  ThrowablePickupRuntime,
   ZoneId,
 } from './types';
 
@@ -19,14 +24,10 @@ export const FLOOR2_Y = 3.5; // Floor 2 deck elevation (Y=0 -> Y=3.5 via stairs)
 export const BALLROOM_CEILING_Y = 6.0; // Double-height Grand Ballroom ceiling
 
 /**
- * 23x23 FLOOR 1 (46m x 46m, Y = 0)
- * - West Wing (Service / Basement): Boiler Utility (1..5,1..4), West Hall (1..6,6),
- *   West Cellar & Service Stairs (2,9..11) [sealed by (2,7) & (4,12) until Midnight Quake],
- *   Pantry (1..4,13..15), Kitchen w/ Island (1..4,17..21)
- * - Central Core: North Gallery (7..15,1..3), Main Stairs (11,6..8),
- *   THE GRAND BALLROOM (8..14,11..17, Y=6.0m double-height!), Entrance Hall & Chained Exit (11,22)
- * - East Wing: East Study (17..21,1..4), Security Storage (18..21,19..21 locked by ward_key),
- *   THE 2-STORY DECAYED LIBRARY (16..21,10..17 w/ Library Stairs at 21,12..14)
+ * 23x23 FLOOR 1 BASE LAYOUT (46m x 46m, Y = 0)
+ * - West Wing: Boiler Utility, West Cellar & Service Stairs, Pantry, Kitchen
+ * - Central Core: North Gallery, Main Stairs, Grand Ballroom (Y=6.0m), Entrance Hall & Chained Exit
+ * - East Wing: East Study, Security Storage, 2-Story Decayed Library (16..21,10..17)
  */
 export const FLOOR1_GRID: readonly string[] = [
   '#######################', // 00
@@ -36,7 +37,7 @@ export const FLOOR1_GRID: readonly string[] = [
   '#.....#.........#.....#', // 04
   '###.###...###...###.###', // 05: (3,5)=Boiler Door | (10..12,5)=Main Stair under-wall | (19,5)=East Study Door
   '#.........#.#.........#', // 06: (6,6)=Boiler-Central Shortcut [QUAKE->'#'] | (11,6)=Main Stairs Top | (13..21,6)=East N Hall
-  '########.##.##.######.#', // 07: (2,7)=Cellar Breach [QUAKE->'.'] | (11,7)=Main Stairs Mid | (21,7)=East Passage
+  '########.##.##.######.#', // 07: (2,7)=Cellar Breach [QUAKE->'.'] | (11,7)=Main Stairs Mid | (17,7)/(21,7)=East Wing Passage
   '##...###.##.##.#......#', // 08: (2..4,8)=Cellar N Landing | (11,8)=Main Stairs Base | (16..21,8)=East Cross Hall
   '##.#.###.......###.####', // 09: (2,9)=West Stairs Top | (11,9)=Main Stair Throat [QUAKE->'#'] | (18,9)=Library N Door
   '##.#.###.##.#.##......#', // 10: (2,10)=West Stairs Mid | (8,10)(11,10)(14,10)=Ballroom N Archways | (16..21,10)=Library N
@@ -55,18 +56,11 @@ export const FLOOR1_GRID: readonly string[] = [
 ];
 
 /**
- * 23x23 FLOOR 2 (46m x 46m, Y = 3.5m, Ceiling = 6.3m)
- * - Endless Loop Corridor: Row 1, cols 3..10 (Red Door appears behind player at (9,1))
- * - Cabin 1 (NW): cols 1..2, rows 2..5
- * - Cabin 2 (SW): cols 1..4, rows 15..20
- * - Cabin 3 (NE): cols 18..21, rows 2..5 (Door at (17,4) seals on turn; Secret Wardrobe at (19,6) opens!)
- * - Master Bedroom (SE): cols 18..21, rows 19..21 (Door at (17,19))
- * - Grand Ballroom Void: cols 8..14, rows 11..17 ('#', open ceiling Y=6.0m from Floor 1)
- * - 2-Story Library Mezzanine: cols 16..21, rows 10..17 overlooking Open Atrium cols 17..19, rows 12..15!
+ * 23x23 FLOOR 2 BASE LAYOUT (46m x 46m, Y = 3.5m, Ceiling = 6.3m)
  */
 export const FLOOR2_GRID: readonly string[] = [
   '#######################', // 00
-  '#...............#######', // 01: Upper North Endless Corridor (3..10) + Central Hall (11..16)
+  '#...............#######', // 01: Upper North Endless Corridor (3..10) + Central Hall (11..15)
   '#..#######...###.#....#', // 02: Cabin 1 (1..2) | Central N | East Hall (16) | Cabin 3 (18..21)
   '#..#######.......#....#', // 03: Cabin 1 | Upper Hall | Cabin 3
   '#..######.............#', // 04: Cabin 1 | Upper Hall | (17,4)=Cabin 3 Door [SHIFTS->'#'] | Cabin 3
@@ -78,7 +72,7 @@ export const FLOOR2_GRID: readonly string[] = [
   '##.#.###########......#', // 10: (2,10)=West Stairs | Library Mezzanine North (16..21)
   '##.#.###########......#', // 11: (2,11)=West Stairs | Library Mezzanine North + Lib Stairs Top (21,11)
   '##....##########......#', // 12: West Stairs F2 Landing (2..5) | Library Mezz + Atrium Void (17..19) + Lib Stairs (21)
-  '#####..#########......#' , // 13: West South Corr (5..6) | Library Mezz + Atrium Void + Lib Stairs
+  '#####..#########......#', // 13: West South Corr (5..6) | Library Mezz + Atrium Void + Lib Stairs
   '#####..#########......#', // 14: West South Corr (5..6) | Library Mezz + Atrium Void + Lib Stairs
   '#....#.#########......#', // 15: Cabin 2 (1..4) | West Corr (6) | Library Mezz + Atrium Void
   '#....#.#########......#', // 16: Cabin 2 | West Corr (6) | Library Mezz South
@@ -92,12 +86,10 @@ export const FLOOR2_GRID: readonly string[] = [
 
 export const FLOOR_GRIDS: readonly (readonly string[])[] = [FLOOR1_GRID, FLOOR2_GRID];
 
-// Double-height Grand Ballroom ceiling void in Floor 2 slab (cols 8..14, rows 11..17)
 export function isBallroomCell(col: number, row: number): boolean {
   return col >= 8 && col <= 14 && row >= 11 && row <= 17;
 }
 
-// 2-Story Decayed Library Open Atrium Void (cols 17..19, rows 12..15)
 export function isLibraryAtriumCell(col: number, row: number): boolean {
   return col >= 17 && col <= 19 && row >= 12 && row <= 15;
 }
@@ -122,24 +114,36 @@ export function isStairShaftCell(col: number, row: number): boolean {
   );
 }
 
-/**
- * Cells that skip the inter-story slab (Y=2.8..3.5m): Stair shafts + Grand Ballroom + Library Atrium.
- */
 export function skipsInterFloorSlab(col: number, row: number): boolean {
   return isStairShaftCell(col, row) || isBallroomCell(col, row) || isLibraryAtriumCell(col, row);
 }
 
 /**
- * Cells managed dynamically by the Architecture Shift Engine (excluded from static instanced walls).
+ * Dynamic Architecture + Procedural Wing + Dream-Logic managed cells.
+ * Excluded from static InstancedMesh walls so they toggle cleanly at runtime!
  */
 export const SHIFT_MANAGED_CELLS: ReadonlyArray<{ floor: FloorIndex; col: number; row: number }> = [
+  // Architecture Shift triggers
   { floor: 1, col: 17, row: 4 }, // Cabin 3 Disappearing Door cell
   { floor: 1, col: 19, row: 6 }, // Cabin 3 Secret Wardrobe Passage
+  { floor: 1, col: 9, row: 1 }, // Endless Corridor shifting bulkhead behind player (broken by Rotary Phone)
   { floor: 0, col: 6, row: 6 }, // Midnight Quake Boiler-Central shortcut collapse
   { floor: 0, col: 11, row: 9 }, // Midnight Quake Main Stair F1 seal
   { floor: 1, col: 11, row: 5 }, // Midnight Quake Main Stair F2 seal
   { floor: 0, col: 2, row: 7 }, // Midnight Quake West Cellar North breach
   { floor: 0, col: 4, row: 12 }, // Midnight Quake West Cellar Pantry breach
+  // Procedural Wing Divider Variants (F1 North Gallery, East Wing, F2 North/South Halls)
+  { floor: 0, col: 10, row: 2 },
+  { floor: 0, col: 12, row: 3 },
+  { floor: 0, col: 14, row: 2 },
+  { floor: 0, col: 9, row: 3 },
+  { floor: 0, col: 13, row: 2 },
+  { floor: 0, col: 17, row: 7 }, // East Wing West-side pass
+  { floor: 0, col: 21, row: 7 }, // East Wing East-side pass
+  { floor: 1, col: 13, row: 2 },
+  { floor: 1, col: 14, row: 3 },
+  { floor: 1, col: 9, row: 20 },
+  { floor: 1, col: 13, row: 20 },
 ];
 
 export function isShiftManagedCell(floor: FloorIndex, col: number, row: number): boolean {
@@ -147,8 +151,62 @@ export function isShiftManagedCell(floor: FloorIndex, col: number, row: number):
 }
 
 /**
- * Smooth elevation Y(x, z) across all 3 staircases between Floor 1 (Y=0) and Floor 2 (Y=3.5m).
+ * Seeded procedural wing stitching: reshapes corridor turns, East Wing passages,
+ * and North/South gallery partitions each run while preserving full solvability.
  */
+export function generateProceduralWingOverrides(seed: number): Record<string, '#' | '.'> {
+  let s = (seed || 1337) >>> 0;
+  const nextRand = () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+
+  const overrides: Record<string, '#' | '.'> = {};
+  const set = (fl: FloorIndex, col: number, row: number, val: '#' | '.') => {
+    overrides[`${fl}:${col},${row}`] = val;
+  };
+
+  // 1. Floor 1 North Gallery divider pattern (3 procedural maze configurations)
+  const f1Pattern = Math.floor(nextRand() * 3);
+  if (f1Pattern === 0) {
+    set(0, 10, 2, '#');
+    set(0, 12, 3, '#');
+    set(0, 14, 2, '#');
+  } else if (f1Pattern === 1) {
+    set(0, 9, 3, '#');
+    set(0, 13, 2, '#');
+    set(0, 12, 3, '#');
+  } else {
+    set(0, 10, 2, '#');
+    set(0, 9, 3, '#');
+    set(0, 14, 2, '#');
+  }
+
+  // 2. Floor 1 East Wing turn flip: either (17, 7) or (21, 7) open
+  if (nextRand() > 0.5) {
+    set(0, 17, 7, '.');
+    set(0, 21, 7, '#');
+  } else {
+    set(0, 17, 7, '#');
+    set(0, 21, 7, '.');
+  }
+
+  // 3. Floor 2 Upper & South Gallery dividers
+  if (nextRand() > 0.5) {
+    set(1, 13, 2, '#');
+  } else {
+    set(1, 14, 3, '#');
+  }
+
+  if (nextRand() > 0.5) {
+    set(1, 9, 20, '#');
+  } else {
+    set(1, 13, 20, '#');
+  }
+
+  return overrides;
+}
+
 export function getSurfaceY(x: number, z: number, currentFloorHint: FloorIndex): number {
   const col = Math.floor(x / TILE_SIZE);
 
@@ -251,7 +309,6 @@ export const ITEM_CATALOG: Record<ItemId, ItemMeta> = {
 };
 
 export const INITIAL_DOORS: readonly DoorSpec[] = [
-  // Floor 1 Doors
   {
     id: 'exit_doors',
     label: 'Entrance Exit Door',
@@ -408,7 +465,6 @@ export const INITIAL_DOORS: readonly DoorSpec[] = [
 ];
 
 export const ITEM_SPAWN_POINTS: readonly ItemSpawnPoint[] = [
-  // Floor 1 Open Locations
   {
     id: 'f1_ballroom_table',
     floor: 0,
@@ -475,7 +531,6 @@ export const ITEM_SPAWN_POINTS: readonly ItemSpawnPoint[] = [
     surfaceY: 0.85,
     hintLabel: 'Boiler Bench',
   },
-  // Floor 1 Security Storage Room (Locked by ward_key)
   {
     id: 'f1_security_desk',
     floor: 0,
@@ -498,7 +553,6 @@ export const ITEM_SPAWN_POINTS: readonly ItemSpawnPoint[] = [
     surfaceY: 0.82,
     hintLabel: 'Storage Crate',
   },
-  // Floor 2 Cabins, Library Mezzanine & Master Bedroom (Open)
   {
     id: 'f2_cabin1_desk',
     floor: 1,
@@ -545,7 +599,6 @@ export const ITEM_SPAWN_POINTS: readonly ItemSpawnPoint[] = [
   },
 ];
 
-// Collectible Glass Shards to immediately reset Spectral Glasses cooldown (including Cabin 3!)
 export const INITIAL_GLASS_SHARDS: ReadonlyArray<Omit<GlassShardRuntime, 'collected'>> = [
   {
     id: 'shard_cabin3',
@@ -585,7 +638,147 @@ export const INITIAL_GLASS_SHARDS: ReadonlyArray<Omit<GlassShardRuntime, 'collec
   },
 ];
 
-// Steam Pipe Valve & Main Breaker Box inside Floor 1 Boiler Utility
+export const INITIAL_THROWABLES: ReadonlyArray<Omit<ThrowablePickupRuntime, 'collected'>> = [
+  { id: 'throw_entrance', kind: 'bottle', label: 'Glass Bottle', floor: 0, x: 13.0 * TILE_SIZE, y: 0, z: 20.4 * TILE_SIZE, surfaceY: 0.14 },
+  { id: 'throw_ballroom', kind: 'bottle', label: 'Glass Bottle', floor: 0, x: 13.9 * TILE_SIZE, y: 0, z: 12.0 * TILE_SIZE, surfaceY: 0.14 },
+  { id: 'throw_kitchen', kind: 'can', label: 'Tin Can', floor: 0, x: 1.7 * TILE_SIZE, y: 0, z: 19.2 * TILE_SIZE, surfaceY: 0.14 },
+  { id: 'throw_pantry', kind: 'can', label: 'Tin Can', floor: 0, x: 2.8 * TILE_SIZE, y: 0, z: 15.2 * TILE_SIZE, surfaceY: 0.14 },
+  { id: 'throw_library_f1', kind: 'bottle', label: 'Glass Bottle', floor: 0, x: 16.6 * TILE_SIZE, y: 0, z: 15.1 * TILE_SIZE, surfaceY: 0.14 },
+  { id: 'throw_boiler', kind: 'can', label: 'Tin Can', floor: 0, x: 4.8 * TILE_SIZE, y: 0, z: 3.4 * TILE_SIZE, surfaceY: 0.14 },
+  { id: 'throw_upper_hall', kind: 'bottle', label: 'Glass Bottle', floor: 1, x: 15.1 * TILE_SIZE, y: FLOOR2_Y, z: 19.4 * TILE_SIZE, surfaceY: FLOOR2_Y + 0.14 },
+  { id: 'throw_library_mezz', kind: 'can', label: 'Tin Can', floor: 1, x: 16.5 * TILE_SIZE, y: FLOOR2_Y, z: 16.6 * TILE_SIZE, surfaceY: FLOOR2_Y + 0.14 },
+];
+
+export const INITIAL_LORE_ITEMS: ReadonlyArray<Omit<LoreItemRuntime, 'inspected'>> = [
+  {
+    id: 'lore_diary_1',
+    kind: 'diary',
+    title: 'Torn Diary Page (Loop 14)',
+    text: 'The doorway behind Cabin 3 seals into solid plaster the second you turn away. Look for the loose wardrobe backing.',
+    floor: 0,
+    x: 10.4 * TILE_SIZE,
+    y: 0,
+    z: 19.6 * TILE_SIZE,
+    surfaceY: 0.05,
+  },
+  {
+    id: 'lore_watch_1',
+    kind: 'watch',
+    title: 'Bloody Pocket Watch',
+    text: 'Its brass hands tick violently backwards. Inside the lid is scratched: "ST. JUDE — DO NOT ANSWER THE HALLWAY PHONE."',
+    floor: 0,
+    x: 8.8 * TILE_SIZE,
+    y: 0,
+    z: 16.2 * TILE_SIZE,
+    surfaceY: 0.05,
+  },
+  {
+    id: 'lore_polaroid_1',
+    kind: 'polaroid',
+    title: 'Faded Kitchen Polaroid',
+    text: 'A Polaroid of this exact kitchen. On the floor lies your own body from an earlier cycle—still clutching a glass bottle.',
+    floor: 0,
+    x: 4.1 * TILE_SIZE,
+    y: 0,
+    z: 21.1 * TILE_SIZE,
+    surfaceY: 0.05,
+  },
+  {
+    id: 'lore_diary_2',
+    kind: 'diary',
+    title: 'Torn Diary Page (Loop 29)',
+    text: 'Her hollow crimson eyes cut straight through the mist before you hear the blade. Crouch beneath a cloth table if she enters.',
+    floor: 0,
+    x: 20.4 * TILE_SIZE,
+    y: 0,
+    z: 11.2 * TILE_SIZE,
+    surfaceY: 0.05,
+  },
+  {
+    id: 'lore_watch_2',
+    kind: 'watch',
+    title: 'Cracked Watch of the Quake',
+    text: 'Stopped at midnight—the exact moment the Main Stairs collapsed. Only the West Cellar stairs stay standing after power returns.',
+    floor: 1,
+    x: 16.5 * TILE_SIZE,
+    y: FLOOR2_Y,
+    z: 13.0 * TILE_SIZE,
+    surfaceY: FLOOR2_Y + 0.05,
+  },
+  {
+    id: 'lore_polaroid_2',
+    kind: 'polaroid',
+    title: 'Mirror Reflection Polaroid',
+    text: 'Taken over your own shoulder in a bathroom mirror: two piercing red pinpoints hover an inch behind your neck.',
+    floor: 1,
+    x: 18.6 * TILE_SIZE,
+    y: FLOOR2_Y,
+    z: 21.3 * TILE_SIZE,
+    surfaceY: FLOOR2_Y + 0.05,
+  },
+];
+
+export const INITIAL_ROTARY_PHONES: ReadonlyArray<Omit<RotaryPhoneRuntime, 'ringing' | 'answeredCount'>> = [
+  {
+    id: 'phone_endless_corridor',
+    zone: 'endless_corridor',
+    floor: 1,
+    x: 5.8 * TILE_SIZE,
+    y: FLOOR2_Y,
+    z: 1.48 * TILE_SIZE,
+    wallFacingYaw: 0,
+    isLoopTrigger: true,
+  },
+  {
+    id: 'phone_ballroom',
+    zone: 'grand_ballroom',
+    floor: 0,
+    x: 14.82 * TILE_SIZE,
+    y: 0,
+    z: 12.6 * TILE_SIZE,
+    wallFacingYaw: Math.PI / 2,
+  },
+  {
+    id: 'phone_upper_hall',
+    zone: 'upper_hall',
+    floor: 1,
+    x: 10.2 * TILE_SIZE,
+    y: FLOOR2_Y,
+    z: 20.82 * TILE_SIZE,
+    wallFacingYaw: 0,
+  },
+];
+
+export const HAUNTED_MIRRORS: readonly HauntedMirrorSpec[] = [
+  {
+    id: 'mirror_pantry',
+    floor: 0,
+    zone: 'pantry',
+    x: 1.08 * TILE_SIZE,
+    y: 0,
+    z: 14.5 * TILE_SIZE,
+    facingYaw: -Math.PI / 2,
+  },
+  {
+    id: 'mirror_upper_hall',
+    floor: 1,
+    zone: 'upper_hall',
+    x: 15.92 * TILE_SIZE,
+    y: FLOOR2_Y,
+    z: 3.5 * TILE_SIZE,
+    facingYaw: Math.PI / 2,
+  },
+  {
+    id: 'mirror_master',
+    floor: 1,
+    zone: 'master_bedroom',
+    x: 21.92 * TILE_SIZE,
+    y: FLOOR2_Y,
+    z: 20.5 * TILE_SIZE,
+    facingYaw: Math.PI / 2,
+  },
+];
+
 export const STEAM_VALVE_POS = {
   floor: 0 as FloorIndex,
   x: 3.6 * TILE_SIZE,
@@ -602,9 +795,7 @@ export const BREAKER_BOX_POS = {
   interactZ: 2.0 * TILE_SIZE,
 };
 
-// Every wing & room has dedicated hiding spots!
 export const HIDE_SPOTS: readonly HideSpotSpec[] = [
-  // Floor 1
   {
     id: 'hide_pantry_locker',
     kind: 'locker',
@@ -677,7 +868,6 @@ export const HIDE_SPOTS: readonly HideSpotSpec[] = [
     facingAngle: Math.PI / 2,
     eyeHeight: 1.44,
   },
-  // Floor 2 Cabins + Master Bedroom
   {
     id: 'hide_cabin1_bed',
     kind: 'bed',
@@ -728,7 +918,79 @@ export const HIDE_SPOTS: readonly HideSpotSpec[] = [
   },
 ];
 
-// Creaky wooden floorboard zones
+/**
+ * Wooden Dining Tables & Draped Medical Gurneys:
+ * Standing players & The Resident collide around them; crouching players crawl underneath (Y=0.55m)!
+ */
+export const HIDE_TABLES: readonly HideTableSpec[] = [
+  {
+    id: 'table_ballroom_dining',
+    label: 'Draped Ballroom Table',
+    floor: 0,
+    zone: 'grand_ballroom',
+    minX: 10.1 * TILE_SIZE,
+    maxX: 11.1 * TILE_SIZE,
+    minZ: 15.6 * TILE_SIZE,
+    maxZ: 16.5 * TILE_SIZE,
+    kind: 'dining',
+  },
+  {
+    id: 'table_kitchen_gurney',
+    label: 'Cloth Kitchen Table',
+    floor: 0,
+    zone: 'kitchen',
+    minX: 3.1 * TILE_SIZE,
+    maxX: 3.95 * TILE_SIZE,
+    minZ: 20.6 * TILE_SIZE,
+    maxZ: 21.5 * TILE_SIZE,
+    kind: 'gurney',
+  },
+  {
+    id: 'table_library_reading',
+    label: 'Library Reading Table',
+    floor: 0,
+    zone: 'library_f1',
+    minX: 17.1 * TILE_SIZE,
+    maxX: 17.95 * TILE_SIZE,
+    minZ: 10.35 * TILE_SIZE,
+    maxZ: 11.25 * TILE_SIZE,
+    kind: 'dining',
+  },
+  {
+    id: 'table_east_study',
+    label: 'Draped Medical Gurney',
+    floor: 0,
+    zone: 'east_study',
+    minX: 17.3 * TILE_SIZE,
+    maxX: 18.2 * TILE_SIZE,
+    minZ: 2.1 * TILE_SIZE,
+    maxZ: 3.3 * TILE_SIZE,
+    kind: 'gurney',
+  },
+  {
+    id: 'table_upper_hall',
+    label: 'Gallery Cloth Table',
+    floor: 1,
+    zone: 'upper_hall',
+    minX: 11.2 * TILE_SIZE,
+    maxX: 12.4 * TILE_SIZE,
+    minZ: 19.65 * TILE_SIZE,
+    maxZ: 20.55 * TILE_SIZE,
+    kind: 'gurney',
+  },
+  {
+    id: 'table_cabin2_dining',
+    label: 'Cabin 2 Dining Table',
+    floor: 1,
+    zone: 'cabin_2',
+    minX: 3.2 * TILE_SIZE,
+    maxX: 4.1 * TILE_SIZE,
+    minZ: 18.0 * TILE_SIZE,
+    maxZ: 19.2 * TILE_SIZE,
+    kind: 'dining',
+  },
+];
+
 export const CREAKY_FLOORS: readonly CreakyFloorZone[] = [
   {
     id: 'creak_entrance_hall',
@@ -756,7 +1018,6 @@ export const CREAKY_FLOORS: readonly CreakyFloorZone[] = [
   },
 ];
 
-// Knockable noise props
 export const INITIAL_KNOCKABLES: ReadonlyArray<{
   id: string;
   label: string;
@@ -765,47 +1026,15 @@ export const INITIAL_KNOCKABLES: ReadonlyArray<{
   y: number;
   z: number;
 }> = [
-  {
-    id: 'cart_kitchen',
-    label: 'Kitchen Tray Cart',
-    floor: 0,
-    x: 4.4 * TILE_SIZE,
-    y: 0,
-    z: 19.4 * TILE_SIZE,
-  },
-  {
-    id: 'bucket_boiler',
-    label: 'Rusted Bucket',
-    floor: 0,
-    x: 4.5 * TILE_SIZE,
-    y: 0,
-    z: 3.8 * TILE_SIZE,
-  },
-  {
-    id: 'vase_ballroom',
-    label: 'Porcelain Urn',
-    floor: 0,
-    x: 13.6 * TILE_SIZE,
-    y: 0,
-    z: 16.4 * TILE_SIZE,
-  },
-  {
-    id: 'vase_upper',
-    label: 'Gallery Urn',
-    floor: 1,
-    x: 15.4 * TILE_SIZE,
-    y: FLOOR2_Y,
-    z: 5.5 * TILE_SIZE,
-  },
+  { id: 'cart_kitchen', label: 'Kitchen Tray Cart', floor: 0, x: 4.4 * TILE_SIZE, y: 0, z: 19.4 * TILE_SIZE },
+  { id: 'bucket_boiler', label: 'Rusted Bucket', floor: 0, x: 4.5 * TILE_SIZE, y: 0, z: 3.8 * TILE_SIZE },
+  { id: 'vase_ballroom', label: 'Porcelain Urn', floor: 0, x: 13.6 * TILE_SIZE, y: 0, z: 16.4 * TILE_SIZE },
+  { id: 'vase_upper', label: 'Gallery Urn', floor: 1, x: 15.4 * TILE_SIZE, y: FLOOR2_Y, z: 5.5 * TILE_SIZE },
 ];
 
 /**
- * Furniture Obstacles & Guardrails:
- * - Kitchen Island Counter (sight-blocking loop cover)
- * - Grand Ballroom 4 Structural Pillars + 3 Dusty Sheet-Covered Furniture obstacles
- * - Library Floor 1 Tall Maze Bookshelves (sight-blocking!)
- * - Library Floor 2 Atrium Guardrail box (prevents walking off the open 2-story mezzanine!)
- * - Cabin Beds
+ * Solid Furniture, Boiler Tank, Pillars, Bookshelves & Mezzanine Guardrails.
+ * Every blocksThreat box stops The Resident cleanly with zero visual clipping!
  */
 export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
   {
@@ -816,6 +1045,17 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 18.1 * TILE_SIZE,
     maxZ: 19.9 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
+  },
+  {
+    id: 'boiler_tank_box',
+    floor: 0,
+    minX: 1.75 * TILE_SIZE,
+    maxX: 2.65 * TILE_SIZE,
+    minZ: 1.55 * TILE_SIZE,
+    maxZ: 2.45 * TILE_SIZE,
+    blocksSight: true,
+    blocksThreat: true,
   },
   // Grand Ballroom 4 Marble Pillars
   {
@@ -826,6 +1066,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 12.25 * TILE_SIZE,
     maxZ: 12.85 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
   {
     id: 'ballroom_pillar_ne',
@@ -835,6 +1076,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 12.25 * TILE_SIZE,
     maxZ: 12.85 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
   {
     id: 'ballroom_pillar_sw',
@@ -844,6 +1086,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 16.15 * TILE_SIZE,
     maxZ: 16.75 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
   {
     id: 'ballroom_pillar_se',
@@ -853,8 +1096,9 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 16.15 * TILE_SIZE,
     maxZ: 16.75 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
-  // Grand Ballroom Dusty Sheet-Covered Furniture (low/mid sightline cover)
+  // Grand Ballroom Dusty Sheet-Covered Furniture
   {
     id: 'ballroom_sheeted_table',
     floor: 0,
@@ -863,6 +1107,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 14.0 * TILE_SIZE,
     maxZ: 15.0 * TILE_SIZE,
     blocksSight: false,
+    blocksThreat: true,
   },
   {
     id: 'ballroom_sheeted_sofa_w',
@@ -872,6 +1117,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 14.1 * TILE_SIZE,
     maxZ: 15.2 * TILE_SIZE,
     blocksSight: false,
+    blocksThreat: true,
   },
   {
     id: 'ballroom_sheeted_sofa_e',
@@ -881,8 +1127,9 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 14.1 * TILE_SIZE,
     maxZ: 15.2 * TILE_SIZE,
     blocksSight: false,
+    blocksThreat: true,
   },
-  // Library Floor 1 Tall Maze Bookshelves (2.5m tall, blocks sight!)
+  // Library Floor 1 Tall Maze Bookshelves
   {
     id: 'library_shelf_1',
     floor: 0,
@@ -891,6 +1138,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 11.7 * TILE_SIZE,
     maxZ: 12.3 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
   {
     id: 'library_shelf_2',
@@ -900,6 +1148,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 13.7 * TILE_SIZE,
     maxZ: 14.3 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
   {
     id: 'library_shelf_3',
@@ -909,6 +1158,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 15.7 * TILE_SIZE,
     maxZ: 16.3 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
   {
     id: 'library_stair_bookcase',
@@ -918,8 +1168,9 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 12.1 * TILE_SIZE,
     maxZ: 14.9 * TILE_SIZE,
     blocksSight: true,
+    blocksThreat: true,
   },
-  // Floor 2 Library Atrium Open Pit Guardrail (blocks movement into void, sight stays OPEN!)
+  // Floor 2 Library Atrium Open Pit Guardrail & Stair Rail
   {
     id: 'library_mezzanine_void_rail',
     floor: 1,
@@ -928,6 +1179,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 12.02 * TILE_SIZE,
     maxZ: 15.98 * TILE_SIZE,
     blocksSight: false,
+    blocksThreat: true,
   },
   {
     id: 'library_f2_stair_guard',
@@ -937,6 +1189,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 12.02 * TILE_SIZE,
     maxZ: 14.98 * TILE_SIZE,
     blocksSight: false,
+    blocksThreat: true,
   },
   // Cabin Beds
   {
@@ -947,6 +1200,7 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 4.35 * TILE_SIZE,
     maxZ: 5.25 * TILE_SIZE,
     blocksSight: false,
+    blocksThreat: true,
   },
   {
     id: 'master_bed_box',
@@ -956,10 +1210,11 @@ export const FURNITURE_OBSTACLES: readonly ObstacleBox[] = [
     minZ: 19.15 * TILE_SIZE,
     maxZ: 20.25 * TILE_SIZE,
     blocksSight: false,
+    blocksThreat: true,
   },
 ];
 
-// Endless Loop Corridor Bounds (Floor 2 Row 1, cols 3..8 — Red Door spawns behind player at col 9)
+// Endless Loop Corridor Bounds (Floor 2 Row 1, cols 3..8 — Rotary Phone breaks the shifting wall at col 9!)
 export const ENDLESS_CORRIDOR_BOUNDS = {
   floor: 1 as FloorIndex,
   minX: 3.1 * TILE_SIZE,
@@ -968,18 +1223,38 @@ export const ENDLESS_CORRIDOR_BOUNDS = {
   maxZ: 2.0 * TILE_SIZE,
   loopThresholdX: 4.3 * TILE_SIZE,
   loopResetDeltaX: 4.0 * TILE_SIZE,
-  redDoorGridX: 9,
-  redDoorGridZ: 1,
+  shiftingWallGridX: 9,
+  shiftingWallGridZ: 1,
 };
 
 export const PLAYER_SPAWN = {
   x: 11.5 * TILE_SIZE,
   y: 0,
   z: 21.2 * TILE_SIZE,
-  yaw: 0, // facing North (-Z) straight into Entrance Hall & Grand Ballroom
+  yaw: 0,
 };
 
-// Resident starts far away in Floor 2 East Wing / Library Mezzanine for atmospheric breathing room!
+/**
+ * Valid randomized start/rebirth rooms across the estate (all verified open & connected).
+ */
+export const RANDOM_SPAWN_POINTS: ReadonlyArray<{
+  id: string;
+  zone: ZoneId;
+  floor: FloorIndex;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+}> = [
+  { id: 'spawn_entrance', zone: 'entrance', floor: 0, x: 11.5 * TILE_SIZE, y: 0, z: 21.2 * TILE_SIZE, yaw: 0 },
+  { id: 'spawn_library', zone: 'library_f1', floor: 0, x: 19.5 * TILE_SIZE, y: 0, z: 10.6 * TILE_SIZE, yaw: Math.PI / 2 },
+  { id: 'spawn_pantry', zone: 'pantry', floor: 0, x: 3.5 * TILE_SIZE, y: 0, z: 14.5 * TILE_SIZE, yaw: -Math.PI / 2 },
+  { id: 'spawn_kitchen', zone: 'kitchen', floor: 0, x: 4.0 * TILE_SIZE, y: 0, z: 17.5 * TILE_SIZE, yaw: -Math.PI / 2 },
+  { id: 'spawn_cabin1', zone: 'cabin_1', floor: 1, x: 1.8 * TILE_SIZE, y: FLOOR2_Y, z: 3.6 * TILE_SIZE, yaw: Math.PI },
+  { id: 'spawn_cabin2', zone: 'cabin_2', floor: 1, x: 2.8 * TILE_SIZE, y: FLOOR2_Y, z: 16.5 * TILE_SIZE, yaw: -Math.PI / 2 },
+  { id: 'spawn_master', zone: 'master_bedroom', floor: 1, x: 19.2 * TILE_SIZE, y: FLOOR2_Y, z: 20.5 * TILE_SIZE, yaw: Math.PI / 2 },
+];
+
 export const THREAT_SPAWN = {
   x: 16.5 * TILE_SIZE,
   y: FLOOR2_Y,
@@ -988,15 +1263,15 @@ export const THREAT_SPAWN = {
 };
 
 export const THREAT_PATROL_WAYPOINTS: ReadonlyArray<{ x: number; y: number; z: number }> = [
-  { x: 16.5 * TILE_SIZE, y: FLOOR2_Y, z: 10.5 * TILE_SIZE }, // Library Mezzanine
-  { x: 14.5 * TILE_SIZE, y: FLOOR2_Y, z: 4.5 * TILE_SIZE }, // Upper East Hall
-  { x: 12.5 * TILE_SIZE, y: FLOOR2_Y, z: 1.5 * TILE_SIZE }, // Upper North Hall
-  { x: 11.5 * TILE_SIZE, y: 0, z: 14.5 * TILE_SIZE }, // Grand Ballroom Center
-  { x: 18.5 * TILE_SIZE, y: 0, z: 15.0 * TILE_SIZE }, // Library Floor 1
-  { x: 18.5 * TILE_SIZE, y: 0, z: 8.5 * TILE_SIZE }, // East Cross Hall
-  { x: 8.5 * TILE_SIZE, y: 0, z: 6.5 * TILE_SIZE }, // North-Central Gallery
-  { x: 3.5 * TILE_SIZE, y: 0, z: 2.8 * TILE_SIZE }, // Boiler Utility
-  { x: 3.5 * TILE_SIZE, y: 0, z: 19.5 * TILE_SIZE }, // Kitchen
-  { x: 11.5 * TILE_SIZE, y: 0, z: 19.5 * TILE_SIZE }, // Entrance Hall
-  { x: 11.5 * TILE_SIZE, y: FLOOR2_Y, z: 19.5 * TILE_SIZE }, // South Gallery Floor 2
+  { x: 16.5 * TILE_SIZE, y: FLOOR2_Y, z: 10.5 * TILE_SIZE },
+  { x: 14.5 * TILE_SIZE, y: FLOOR2_Y, z: 4.5 * TILE_SIZE },
+  { x: 12.5 * TILE_SIZE, y: FLOOR2_Y, z: 1.5 * TILE_SIZE },
+  { x: 11.5 * TILE_SIZE, y: 0, z: 14.5 * TILE_SIZE },
+  { x: 18.5 * TILE_SIZE, y: 0, z: 15.0 * TILE_SIZE },
+  { x: 18.5 * TILE_SIZE, y: 0, z: 8.5 * TILE_SIZE },
+  { x: 8.5 * TILE_SIZE, y: 0, z: 6.5 * TILE_SIZE },
+  { x: 3.5 * TILE_SIZE, y: 0, z: 2.8 * TILE_SIZE },
+  { x: 3.5 * TILE_SIZE, y: 0, z: 19.5 * TILE_SIZE },
+  { x: 11.5 * TILE_SIZE, y: 0, z: 19.5 * TILE_SIZE },
+  { x: 11.5 * TILE_SIZE, y: FLOOR2_Y, z: 19.5 * TILE_SIZE },
 ];

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { FLOOR_HEIGHT } from './mapData';
-import { DoorSpec, ItemId } from './types';
+import { DoorSpec, ItemId, LoreKind } from './types';
 
 export interface ThreatModelHandle {
   group: THREE.Group;
@@ -13,7 +13,8 @@ export interface ThreatModelHandle {
   head: THREE.Group;
   jaw: THREE.Group;
   bodyMat: THREE.MeshStandardMaterial;
-  eyeMat: THREE.MeshStandardMaterial;
+  eyeMat: THREE.MeshBasicMaterial;
+  eyeLight: THREE.PointLight;
 }
 
 export interface DoorModelHandle {
@@ -40,6 +41,12 @@ export interface SteamValveHandle {
   group: THREE.Group;
   attachedWheel: THREE.Group;
   steamPlume: THREE.Mesh;
+}
+
+export interface MirrorModelHandle {
+  group: THREE.Group;
+  reflectionSilhouette: THREE.Group;
+  hauntEyes: THREE.Group;
 }
 
 function mergeBakedGeos(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
@@ -123,7 +130,6 @@ export function createContactShadowDisc(
 
 /**
  * Functional 2-Story Wooden Staircase (1 merged draw call).
- * Climbs from (z = +run/2, y = 0) up to (z = -run/2, y = rise).
  */
 export function createStaircaseFlightMesh(
   rise = 3.5,
@@ -138,7 +144,6 @@ export function createStaircaseFlightMesh(
   for (let i = 0; i < numSteps; i++) {
     const zCenter = run / 2 - (i + 0.5) * stepRun;
     const yTop = (i + 1) * stepRise;
-    // Step tread + riser backing
     parts.push({
       geo: translatedBox(width - 0.14, 0.16, stepRun + 0.06, 0, yTop - 0.08, zCenter),
       color: i % 2 === 0 ? 0x4b3829 : 0x3f2f22,
@@ -149,7 +154,6 @@ export function createStaircaseFlightMesh(
     });
   }
 
-  // Left & Right sloped stringers + handrails
   const slopeLen = Math.hypot(run, rise);
   const slopeAngle = Math.atan2(rise, run);
   const sideOffset = width * 0.5 - 0.06;
@@ -165,7 +169,6 @@ export function createStaircaseFlightMesh(
     rail.translate(sx, rise * 0.5 + 0.85, 0);
     parts.push({ geo: rail, color: 0x523e2e });
 
-    // Newel posts at bottom, middle, top
     [
       [0, run * 0.5 - 0.15],
       [rise * 0.5, 0],
@@ -188,7 +191,7 @@ export function createStaircaseFlightMesh(
 }
 
 /**
- * Floor 1 Kitchen Island Counter + Overhead Dish Rack (blocks line of sight for looping!).
+ * Floor 1 Kitchen Island Counter + Overhead Dish Rack.
  */
 export function createKitchenIslandModel(width = 3.2, depth = 3.4): THREE.Group {
   const group = new THREE.Group();
@@ -207,8 +210,39 @@ export function createKitchenIslandModel(width = 3.2, depth = 3.4): THREE.Group 
 }
 
 /**
- * "The Resident": Elongated, emaciated stalker (~2.12m) with burlap/bandaged face,
- * one sunken glowing eye, twisted neck, and a rusted surgical blade dragging on the floor.
+ * Draped Dining Table & Medical Gurney for Under-Table Hiding (hollow underside Y < 0.72m!).
+ */
+export function createDrapedTableGeometry(
+  width: number,
+  depth: number,
+  kind: 'dining' | 'gurney'
+): THREE.BufferGeometry {
+  const topColor = kind === 'gurney' ? 0x6d7873 : 0x4b3828;
+  const clothColor = kind === 'gurney' ? 0x9aa69e : 0x7d7668;
+  const legColor = kind === 'gurney' ? 0x3a423e : 0x32251b;
+
+  const legX = width * 0.5 - 0.08;
+  const legZ = depth * 0.5 - 0.08;
+
+  return mergeColoredGeos([
+    // Tabletop raised to Y=0.78m so crouching player (0.55m eye) fits cleanly underneath
+    { geo: translatedBox(width, 0.08, depth, 0, 0.78, 0), color: topColor },
+    // Hanging tablecloth trim on front & back edges (upper skirt)
+    { geo: translatedBox(width + 0.04, 0.16, 0.04, 0, 0.7, depth * 0.5), color: clothColor },
+    { geo: translatedBox(width + 0.04, 0.16, 0.04, 0, 0.7, -depth * 0.5), color: clothColor },
+    { geo: translatedBox(0.04, 0.16, depth + 0.04, -width * 0.5, 0.7, 0), color: clothColor },
+    { geo: translatedBox(0.04, 0.16, depth + 0.04, width * 0.5, 0.7, 0), color: clothColor },
+    // 4 Corner Legs
+    { geo: translatedBox(0.07, 0.76, 0.07, -legX, 0.38, -legZ), color: legColor },
+    { geo: translatedBox(0.07, 0.76, 0.07, legX, 0.38, -legZ), color: legColor },
+    { geo: translatedBox(0.07, 0.76, 0.07, -legX, 0.38, legZ), color: legColor },
+    { geo: translatedBox(0.07, 0.76, 0.07, legX, 0.38, legZ), color: legColor },
+  ]);
+}
+
+/**
+ * "The Resident": Elongated stalker (~2.12m) with TWO piercing glowing crimson-amber pinpoint eyes
+ * (fog: false + local PointLight), jagged unhinged jaw for Devour Jumpscare, and dragged blade.
  */
 export function createThreatModel(shadowTex: THREE.Texture): ThreatModelHandle {
   const group = new THREE.Group();
@@ -233,11 +267,11 @@ export function createThreatModel(shadowTex: THREE.Texture): ThreatModelHandle {
     roughness: 0.4,
     metalness: 0.8,
   });
-  const eyeMat = new THREE.MeshStandardMaterial({
-    color: 0xf4ffad,
-    emissive: 0xc2e655,
-    emissiveIntensity: 2.2,
-    roughness: 0.15,
+  // Intense crimson-amber pinpoint eyes that cut through fog cleanly down dark hallways
+  const eyeMat = new THREE.MeshBasicMaterial({
+    color: 0xff2600,
+    fog: false,
+    toneMapped: false,
   });
 
   group.add(createContactShadowDisc(shadowTex, 0.82, 0.58));
@@ -271,24 +305,44 @@ export function createThreatModel(shadowTex: THREE.Texture): ThreatModelHandle {
 
   const bandage = new THREE.CylinderGeometry(0.168, 0.168, 0.11, 10);
   bandage.rotateZ(0.16);
-  bandage.translate(0, 0.26, -0.01);
+  bandage.translate(0, 0.27, -0.01);
 
+  // Dark hollow sockets + upper teeth row + black void throat
   const headGeo = mergeColoredGeos([
     { geo: translatedCyl(0.065, 0.085, 0.18, 8, 0, 0.05, 0), color: 0x7b7f71 },
     { geo: cranium, color: 0x746b58 },
     { geo: bandage, color: 0x3b4039 },
+    { geo: translatedBox(0.055, 0.042, 0.04, -0.055, 0.23, -0.145), color: 0x050202 },
+    { geo: translatedBox(0.055, 0.042, 0.04, 0.055, 0.23, -0.145), color: 0x050202 },
+    { geo: translatedBox(0.11, 0.08, 0.06, 0, 0.15, -0.13), color: 0x040101 }, // void throat
   ]);
-  const singleEye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 8), eyeMat);
-  singleEye.position.set(0.058, 0.24, -0.158);
-  head.add(new THREE.Mesh(headGeo, bodyVertexMat), singleEye);
 
+  // Two intense glowing crimson-amber pinpoint eyes + local red glow PointLight
+  const eyeGeo = new THREE.SphereGeometry(0.022, 8, 8);
+  const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+  leftEye.position.set(-0.055, 0.23, -0.162);
+  const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+  rightEye.position.set(0.055, 0.23, -0.162);
+
+  const eyeLight = new THREE.PointLight(0xff2200, 1.4, 3.8);
+  eyeLight.position.set(0, 0.22, -0.26);
+
+  head.add(new THREE.Mesh(headGeo, bodyVertexMat), leftEye, rightEye, eyeLight);
+
+  // Unhingable Jaw with Jagged Teeth for Devour Jumpscare
   const jaw = new THREE.Group();
   jaw.position.set(0, 0.12, -0.08);
-  const jawGeo = mergeColoredGeos([
-    { geo: translatedBox(0.13, 0.08, 0.12, 0, -0.02, -0.03), color: 0x6b1414 },
-    { geo: translatedBox(0.18, 0.09, 0.16, 0, -0.05, -0.02), color: 0x746b58 },
-  ]);
-  jaw.add(new THREE.Mesh(jawGeo, bodyVertexMat));
+  const jawParts: Array<{ geo: THREE.BufferGeometry; color: number }> = [
+    { geo: translatedBox(0.13, 0.08, 0.12, 0, -0.02, -0.03), color: 0x450909 },
+    { geo: translatedBox(0.18, 0.09, 0.16, 0, -0.06, -0.02), color: 0x746b58 },
+  ];
+  [-0.05, -0.025, 0, 0.025, 0.05].forEach((tx, idx) => {
+    jawParts.push({
+      geo: translatedBox(0.015, idx % 2 === 0 ? 0.036 : 0.028, 0.015, tx, 0.025, -0.08),
+      color: 0xd9d2be,
+    });
+  });
+  jaw.add(new THREE.Mesh(mergeColoredGeos(jawParts), bodyVertexMat));
   head.add(jaw);
   group.add(head);
 
@@ -362,12 +416,10 @@ export function createThreatModel(shadowTex: THREE.Texture): ThreatModelHandle {
     jaw,
     bodyMat: shroudMat,
     eyeMat,
+    eyeLight,
   };
 }
 
-/**
- * Shared Wardrobe Shell Geometry (for instancing) & Hinged Door Leaf.
- */
 export function createWardrobeShellGeometry(): THREE.BufferGeometry {
   return mergeBakedGeos([
     translatedBox(1.06, 2.2, 0.07, 0, 1.1, 0.38),
@@ -392,9 +444,6 @@ export function createWardrobeDoorHandle(): LockerModelHandle {
   return { group, doorPivot };
 }
 
-/**
- * Combined Iron & Oak Bed Geometry (for instancing in Floor 2 Cabin 1 & Master Bedroom).
- */
 export function createBedGeometry(): THREE.BufferGeometry {
   return mergeColoredGeos([
     { geo: translatedBox(1.75, 0.1, 2.3, 0, 0.68, 0), color: 0x2d3330 },
@@ -408,9 +457,6 @@ export function createBedGeometry(): THREE.BufferGeometry {
   ]);
 }
 
-/**
- * Floor 1 Boiler Tank (2 draw calls: shell+pipe merged + glowing grate).
- */
 export function createBoilerModel(): THREE.Group {
   const group = new THREE.Group();
   const metalMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.58, metalness: 0.68 });
@@ -435,9 +481,6 @@ export function createBoilerModel(): THREE.Group {
   return group;
 }
 
-/**
- * Leaking Steam Pipe & Valve Socket (uses clean translucent cone plume — ZERO THREE.Points dots).
- */
 export function createSteamValveModel(): SteamValveHandle {
   const group = new THREE.Group();
   const pipeMat = new THREE.MeshStandardMaterial({ color: 0x525954, roughness: 0.48, metalness: 0.76 });
@@ -485,9 +528,6 @@ export function createSteamValveModel(): SteamValveHandle {
   return { group, attachedWheel, steamPlume };
 }
 
-/**
- * Knockable noise-trap props (1 draw call each).
- */
 export function createKnockableModel(kind: 'vase' | 'cart' | 'bucket'): THREE.Group {
   const group = new THREE.Group();
 
@@ -524,9 +564,6 @@ export function createKnockableModel(kind: 'vase' | 'cart' | 'bucket'): THREE.Gr
   return group;
 }
 
-/**
- * Triangle Time-Loop Echo Corpse (2 draw calls + contact shadow).
- */
 export function createEchoCorpseModel(shadowTex: THREE.Texture): THREE.Group {
   const group = new THREE.Group();
   const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.84 });
@@ -551,9 +588,6 @@ export function createEchoCorpseModel(shadowTex: THREE.Texture): THREE.Group {
   return group;
 }
 
-/**
- * Triangle Time-Loop Phantom Echo silhouette (1 merged draw call).
- */
 export function createPhantomSilhouetteModel(): THREE.Group {
   const group = new THREE.Group();
   const mat = new THREE.MeshBasicMaterial({
@@ -571,9 +605,6 @@ export function createPhantomSilhouetteModel(): THREE.Group {
   return group;
 }
 
-/**
- * Steel Locker Shared Shell Geometry (for instancing) & Hinged Door Leaf.
- */
 export function createLockerShellGeometry(): THREE.BufferGeometry {
   return mergeBakedGeos([
     translatedBox(0.94, 2.15, 0.06, 0, 1.075, 0.38),
@@ -598,9 +629,6 @@ export function createLockerDoorHandle(): LockerModelHandle {
   return { group, doorPivot };
 }
 
-/**
- * Industrial Main Breaker Box mounted on wall.
- */
 export function createBreakerBoxModel(): BreakerModelHandle {
   const group = new THREE.Group();
   const bodyMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.52, metalness: 0.65 });
@@ -632,9 +660,6 @@ export function createBreakerBoxModel(): BreakerModelHandle {
   return { group, ledMat, lever };
 }
 
-/**
- * Framed Doorway Assembly with merged jamb/transom frame & handprint decal.
- */
 export function createDoorAssembly(
   spec: DoorSpec,
   tileSize: number,
@@ -764,9 +789,6 @@ export function createDoorAssembly(
   return { group, leafPivot, padlockMesh };
 }
 
-/**
- * Multi-part Pickups (1 draw call each except fuse core glow).
- */
 export function createPickupModel(id: ItemId): THREE.Group {
   const group = new THREE.Group();
   const bodyGroup = new THREE.Group();
@@ -844,8 +866,159 @@ export function createPickupModel(id: ItemId): THREE.Group {
 }
 
 /**
- * Grand Ballroom Broken Hanging Chandelier (2 draw calls: wrought-iron frame + dusty crystal glow).
+ * Throwable Glass Bottle & Tin Can models.
  */
+export function createThrowableModel(kind: 'bottle' | 'can'): THREE.Group {
+  const group = new THREE.Group();
+  if (kind === 'bottle') {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x4b7a5a,
+      emissive: 0x102216,
+      emissiveIntensity: 0.55,
+      roughness: 0.18,
+      metalness: 0.15,
+    });
+    const geo = mergeBakedGeos([
+      translatedCyl(0.055, 0.058, 0.18, 10, 0, 0.09, 0),
+      translatedCyl(0.024, 0.055, 0.07, 10, 0, 0.21, 0),
+      translatedCyl(0.024, 0.024, 0.06, 10, 0, 0.27, 0),
+    ]);
+    group.add(new THREE.Mesh(geo, mat));
+  } else {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x8f8a7d,
+      emissive: 0x262018,
+      emissiveIntensity: 0.4,
+      roughness: 0.45,
+      metalness: 0.72,
+    });
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.16, 10), mat);
+    mesh.position.y = 0.08;
+    group.add(mesh);
+  }
+  return group;
+}
+
+/**
+ * Inspectable Lore Collectibles (Diary Pages, Backwards Watches, Strange Polaroids).
+ */
+export function createLoreItemModel(kind: LoreKind): THREE.Group {
+  const group = new THREE.Group();
+  if (kind === 'diary') {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xe4dbb8,
+      emissive: 0x423b26,
+      emissiveIntensity: 0.75,
+      roughness: 0.85,
+    });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.015, 0.3), mat);
+    mesh.position.y = 0.02;
+    mesh.rotation.y = 0.24;
+    group.add(mesh);
+  } else if (kind === 'watch') {
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xd1ad58,
+      emissive: 0x4d3a10,
+      emissiveIntensity: 0.8,
+      roughness: 0.25,
+      metalness: 0.88,
+    });
+    const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.03, 12), mat);
+    mesh.position.y = 0.03;
+    group.add(mesh);
+  } else {
+    const mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      emissive: 0x282824,
+      emissiveIntensity: 0.65,
+      roughness: 0.7,
+    });
+    const geo = mergeColoredGeos([
+      { geo: translatedBox(0.2, 0.01, 0.23, 0, 0.015, 0), color: 0xe6e3d8 },
+      { geo: translatedBox(0.16, 0.014, 0.15, 0, 0.017, -0.02), color: 0x241d1c },
+    ]);
+    group.add(new THREE.Mesh(geo, mat));
+  }
+  return group;
+}
+
+/**
+ * Pedestal + Wall Rotary Telephone assembly.
+ */
+export function createRotaryPhoneModel(isEndlessTable = false): THREE.Group {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.25 });
+  const parts: Array<{ geo: THREE.BufferGeometry; color: number }> = [];
+  let yOff = 0;
+
+  if (isEndlessTable) {
+    parts.push({ geo: translatedBox(0.75, 0.78, 0.58, 0, 0.39, 0), color: 0x3b2c20 });
+    yOff = 0.78;
+  }
+
+  parts.push(
+    { geo: translatedBox(0.26, 0.13, 0.22, 0, yOff + 0.065, 0), color: 0x161817 },
+    { geo: translatedCyl(0.07, 0.07, 0.03, 12, 0, yOff + 0.13, 0.06, 0.45, 0), color: 0xc2b99b },
+    { geo: translatedBox(0.32, 0.05, 0.06, 0, yOff + 0.165, -0.03), color: 0x161817 },
+    { geo: translatedCyl(0.045, 0.045, 0.06, 8, -0.14, yOff + 0.155, -0.03), color: 0x242826 },
+    { geo: translatedCyl(0.045, 0.045, 0.06, 8, 0.14, yOff + 0.155, -0.03), color: 0x242826 }
+  );
+
+  group.add(new THREE.Mesh(mergeColoredGeos(parts), mat));
+  return group;
+}
+
+/**
+ * Haunted Wall Mirror with lagging ghostly silhouette & sudden crimson eye flash.
+ */
+export function createHauntedMirrorAssembly(): MirrorModelHandle {
+  const group = new THREE.Group();
+  const frameMat = new THREE.MeshStandardMaterial({ color: 0x2c2219, roughness: 0.72, metalness: 0.18 });
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x364442,
+    emissive: 0x0c1312,
+    emissiveIntensity: 0.45,
+    roughness: 0.12,
+    metalness: 0.85,
+  });
+
+  const frameGeo = mergeBakedGeos([
+    translatedBox(0.95, 1.45, 0.06, 0, 1.5, 0),
+  ]);
+  const mirrorFace = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 1.28), glassMat);
+  mirrorFace.position.set(0, 1.5, 0.034);
+  group.add(new THREE.Mesh(frameGeo, frameMat), mirrorFace);
+
+  // Lagging ghost silhouette inside glass surface
+  const reflectionSilhouette = new THREE.Group();
+  reflectionSilhouette.position.set(0, 1.45, 0.038);
+  const ghostMat = new THREE.MeshBasicMaterial({
+    color: 0x16221e,
+    transparent: true,
+    opacity: 0.55,
+  });
+  const ghostBody = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.72), ghostMat);
+  ghostBody.position.y = -0.12;
+  const ghostHead = new THREE.Mesh(new THREE.CircleGeometry(0.11, 10), ghostMat);
+  ghostHead.position.y = 0.34;
+  reflectionSilhouette.add(ghostBody, ghostHead);
+  group.add(reflectionSilhouette);
+
+  // Piercing red eyes over shoulder
+  const hauntEyes = new THREE.Group();
+  hauntEyes.position.set(0.14, 1.72, 0.042);
+  hauntEyes.visible = false;
+  const hEyeMat = new THREE.MeshBasicMaterial({ color: 0xff2200, fog: false, toneMapped: false });
+  const e1 = new THREE.Mesh(new THREE.CircleGeometry(0.018, 8), hEyeMat);
+  e1.position.x = -0.03;
+  const e2 = new THREE.Mesh(new THREE.CircleGeometry(0.018, 8), hEyeMat);
+  e2.position.x = 0.03;
+  hauntEyes.add(e1, e2);
+  group.add(hauntEyes);
+
+  return { group, reflectionSilhouette, hauntEyes };
+}
+
 export function createChandelierModel(): THREE.Group {
   const group = new THREE.Group();
   const ironMat = new THREE.MeshStandardMaterial({ color: 0x2a2520, roughness: 0.55, metalness: 0.75 });
@@ -882,9 +1055,6 @@ export function createChandelierModel(): THREE.Group {
   return group;
 }
 
-/**
- * Grand Ballroom Fluted Marble Structural Column (for InstancedMesh).
- */
 export function createMarblePillarGeometry(height = 6.0): THREE.BufferGeometry {
   return mergeColoredGeos([
     { geo: translatedBox(0.95, 0.32, 0.95, 0, 0.16, 0), color: 0x3b413d },
@@ -893,9 +1063,6 @@ export function createMarblePillarGeometry(height = 6.0): THREE.BufferGeometry {
   ]);
 }
 
-/**
- * Grand Ballroom Dusty Furniture Draped in Pale Dust Sheets (for InstancedMesh).
- */
 export function createSheetedFurnitureGeometry(w = 1.8, h = 1.05, d = 1.6): THREE.BufferGeometry {
   return mergeColoredGeos([
     { geo: translatedBox(w, h * 0.85, d, 0, h * 0.425, 0), color: 0x9aa39b },
@@ -904,9 +1071,6 @@ export function createSheetedFurnitureGeometry(w = 1.8, h = 1.05, d = 1.6): THRE
   ]);
 }
 
-/**
- * Decayed Tall Library Bookshelf filled with faded leather volumes (for InstancedMesh).
- */
 export function createBookshelfGeometry(w = 4.2, h = 2.55, d = 0.9): THREE.BufferGeometry {
   const parts: Array<{ geo: THREE.BufferGeometry; color: number }> = [
     { geo: translatedBox(w, h, 0.08, 0, h * 0.5, 0), color: 0x2c2017 },
@@ -926,9 +1090,6 @@ export function createBookshelfGeometry(w = 4.2, h = 2.55, d = 0.9): THREE.Buffe
   return mergeColoredGeos(parts);
 }
 
-/**
- * Floor 2 Library Mezzanine Open Balcony Wooden Balustrade Railing.
- */
 export function createMezzanineRailingGeometry(length: number): THREE.BufferGeometry {
   const parts: Array<{ geo: THREE.BufferGeometry; color: number }> = [
     { geo: translatedBox(length, 0.09, 0.12, 0, 0.96, 0), color: 0x4d3929 },
@@ -945,9 +1106,6 @@ export function createMezzanineRailingGeometry(length: number): THREE.BufferGeom
   return mergeColoredGeos(parts);
 }
 
-/**
- * Collectible Occult Glass Shard (recharges Spectral Glasses).
- */
 export function createGlassShardModel(): THREE.Group {
   const group = new THREE.Group();
   const shardMat = new THREE.MeshStandardMaterial({
@@ -962,37 +1120,5 @@ export function createGlassShardModel(): THREE.Group {
   const mesh = new THREE.Mesh(crystal, shardMat);
   mesh.position.y = 0.2;
   group.add(mesh);
-  return group;
-}
-
-/**
- * P.T. / Endless Corridor Eerie Crimson Red Door (appears behind player).
- */
-export function createRedShiftDoorModel(tileSize: number, ceilingHeight = FLOOR_HEIGHT): THREE.Group {
-  const group = new THREE.Group();
-  const frameMat = new THREE.MeshStandardMaterial({ color: 0x240b0b, roughness: 0.65 });
-  const leafMat = new THREE.MeshStandardMaterial({
-    color: 0x7a1717,
-    emissive: 0x290404,
-    emissiveIntensity: 0.75,
-    roughness: 0.42,
-    metalness: 0.2,
-  });
-  const knobMat = new THREE.MeshStandardMaterial({ color: 0xd4b56a, roughness: 0.25, metalness: 0.9 });
-
-  const doorH = Math.min(2.38, ceilingHeight - 0.18);
-  const transomH = Math.max(0.18, ceilingHeight - doorH);
-  const frameGeo = mergeBakedGeos([
-    translatedBox(0.18, ceilingHeight, 0.34, -tileSize / 2 + 0.09, ceilingHeight / 2, 0),
-    translatedBox(0.18, ceilingHeight, 0.34, tileSize / 2 - 0.09, ceilingHeight / 2, 0),
-    translatedBox(tileSize, transomH, 0.34, 0, doorH + transomH / 2, 0),
-  ]);
-  const leaf = new THREE.Mesh(new THREE.BoxGeometry(tileSize - 0.34, doorH, 0.12), leafMat);
-  leaf.position.y = doorH / 2;
-
-  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.055, 8, 8), knobMat);
-  knob.position.set(0.55, 1.05, 0);
-
-  group.add(new THREE.Mesh(frameGeo, frameMat), leaf, knob);
   return group;
 }

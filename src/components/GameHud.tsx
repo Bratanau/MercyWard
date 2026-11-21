@@ -2,12 +2,12 @@ import React from 'react';
 import { ITEM_CATALOG } from '../game/mapData';
 import { GameHudSnapshot, ZoneId } from '../game/types';
 import {
+  BottleIconSvg,
+  FlashlightIconSvg,
   ItemSvgIcon,
   PauseIconSvg,
-  RestartIconSvg,
   SoundIconSvg,
   SpectralGlassesSvg,
-  VitalityPipSvg,
 } from './GameIcons';
 import { MobileControlState } from './HospitalViewport';
 import { MobileControls } from './MobileControls';
@@ -18,10 +18,12 @@ interface GameHudProps {
   mobileInputRef: React.MutableRefObject<MobileControlState>;
   onToggleMute: () => void;
   onPause: () => void;
-  onRestart: () => void;
   onInteract: () => void;
   onCrouch: () => void;
   onGlasses: () => void;
+  onThrow: () => void;
+  onFlashlight: () => void;
+  onDismissLore: () => void;
   onSelectSlot: (idx: number) => void;
 }
 
@@ -77,18 +79,22 @@ export const GameHud: React.FC<GameHudProps> = ({
   mobileInputRef,
   onToggleMute,
   onPause,
-  onRestart,
   onInteract,
   onCrouch,
   onGlasses,
+  onThrow,
+  onFlashlight,
+  onDismissLore,
   onSelectSlot,
 }) => {
   const dangerOpacity = Math.min(0.7, hud.dangerLevel * 0.45 + hud.damageFlash * 0.55);
-  const postureLabel = hud.hiding
-    ? 'Hidden'
-    : hud.crouching
-      ? 'Crouching'
-      : 'Standing';
+  const postureLabel = hud.isUnderTable
+    ? 'Under Table'
+    : hud.hiding
+      ? 'Hidden'
+      : hud.crouching
+        ? 'Crouching'
+        : 'Standing';
   const glassesReady = !hud.glassesActive && hud.glassesCooldownLeft <= 0;
 
   return (
@@ -101,6 +107,27 @@ export const GameHud: React.FC<GameHudProps> = ({
             'radial-gradient(circle at 50% 50%, transparent 56%, rgba(3, 6, 4, 0.36) 100%)',
         }}
       />
+
+      {/* Under-Table Hanging Cloth Edge Vignette */}
+      {hud.isUnderTable && (
+        <div
+          data-testid="under-table-overlay"
+          className="fixed inset-0 pointer-events-none flex flex-col justify-between"
+        >
+          <div
+            className="h-14 sm:h-16 border-b-2 border-dashed border-[#5c5749] flex items-end justify-center pb-1.5"
+            style={{
+              background:
+                'linear-gradient(180deg, rgba(16, 15, 12, 0.96) 0%, rgba(28, 26, 21, 0.85) 85%, transparent 100%)',
+            }}
+          >
+            <span className="text-[11px] uppercase tracking-[0.22em] text-[#b8b099] font-medium">
+              Concealed Under Table Cloth
+            </span>
+          </div>
+          <div className="h-10 bg-gradient-to-t from-[#050806]/85 to-transparent" />
+        </div>
+      )}
 
       {/* Spectral Glasses Occult Night-Vision Overlay */}
       {hud.glassesActive && (
@@ -129,8 +156,8 @@ export const GameHud: React.FC<GameHudProps> = ({
         />
       )}
 
-      {/* Restricted FOV Slats / Low Frame when Hiding */}
-      {hud.hiding && (
+      {/* Restricted FOV Slats / Low Frame when Hiding in Locker / Wardrobe / Bed */}
+      {hud.hiding && !hud.isUnderTable && (
         <div
           className="fixed inset-0 pointer-events-none flex flex-col justify-between"
           style={{
@@ -145,25 +172,21 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
-      {/* Top Row: Left Vitals, Floor/Zone, Loop & Objective | Right Utility + Spectral Glasses */}
+      {/* Top Row: Left Vitals, Pocket Radio, Objective | Right Utility (NO Quick-Restart on HUD!) */}
       <div className="flex items-start justify-between gap-2 sm:gap-3 p-2.5 sm:p-5">
         <div
           className="flex-1 min-w-0 max-w-[238px] sm:max-w-sm rounded-lg border border-[#2d3e33] px-3 py-2 sm:px-3.5 sm:py-2.5"
           style={{ backgroundColor: 'rgba(10, 17, 13, 0.86)' }}
         >
           <div className="flex items-center justify-between gap-2 sm:gap-3">
-            <div
-              className="flex items-center gap-1 sm:gap-1.5 shrink-0"
-              aria-label={`Chances remaining: ${hud.strikesRemaining} of ${hud.maxStrikes}`}
-            >
-              {Array.from({ length: hud.maxStrikes }).map((_, idx) => (
-                <VitalityPipSvg key={idx} active={idx < hud.strikesRemaining} className="w-4 h-4 sm:w-5 sm:h-5" />
-              ))}
+            <div className="flex items-center gap-1.5 text-[11px] sm:text-xs font-medium text-[#b5ccb8]">
+              <span className="inline-block w-2 h-2 rounded-full bg-[#69b879]" />
+              <span>{postureLabel}</span>
             </div>
             <div className="flex items-center gap-1.5 text-[11px] sm:text-xs text-[#9cb1a0] truncate">
-              <span>{postureLabel}</span>
-              <span aria-hidden="true">·</span>
               <span className="font-mono-tabular text-[#d4e2d5]">{formatTimer(hud.elapsedSeconds)}</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular text-[#a9c4ad]">Loop {hud.loopCount}</span>
             </div>
           </div>
 
@@ -172,30 +195,84 @@ export const GameHud: React.FC<GameHudProps> = ({
             <span aria-hidden="true">·</span>
             <span className="truncate">{formatZone(hud.currentZone)}</span>
             <span aria-hidden="true">·</span>
-            <span className="font-mono-tabular text-[#b8cbb9] shrink-0">Loop {hud.loopCount}</span>
+            <span className="font-mono-tabular text-[#b8cbb9] shrink-0">Lore {hud.loreFound}/{hud.loreTotal}</span>
           </div>
 
           <p className="mt-1 text-xs sm:text-sm font-medium text-[#dce8dd] leading-snug line-clamp-2">
             {hud.objectiveText}
           </p>
 
-          {/* Stamina Bar */}
-          <div className="mt-1.5 flex items-center gap-2">
-            <span className="text-[10px] sm:text-[11px] uppercase tracking-wider text-[#829886]">Stamina</span>
-            <div className="flex-1 h-1.5 rounded-sm bg-[#18221b] overflow-hidden">
-              <div
-                className="h-full transition-all duration-100"
-                style={{
-                  width: `${hud.stamina}%`,
-                  backgroundColor: hud.stamina > 25 ? '#69b879' : '#c95c4e',
-                }}
-              />
+          {/* Stamina & Radio Static Compact Meters */}
+          <div className="mt-1.5 grid grid-cols-2 gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-[#829886]">Stam</span>
+              <div className="flex-1 h-1.5 rounded-sm bg-[#18221b] overflow-hidden">
+                <div
+                  className="h-full transition-all duration-100"
+                  style={{
+                    width: `${hud.stamina}%`,
+                    backgroundColor: hud.stamina > 25 ? '#69b879' : '#c95c4e',
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5" data-testid="radio-static-meter">
+              <span className="text-[10px] uppercase tracking-wider text-[#9c896d]">Radio</span>
+              <div className="flex-1 h-1.5 rounded-sm bg-[#18221b] overflow-hidden">
+                <div
+                  className="h-full transition-all duration-100"
+                  style={{
+                    width: `${Math.round(hud.radioStaticLevel * 100)}%`,
+                    backgroundColor: hud.radioStaticLevel > 0.55 ? '#d95b50' : '#d4a64a',
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Top-Right Utility Controls + Desktop Spectral Glasses Toggle */}
+        {/* Top-Right Utility Controls (Desktop Quick Toggles + Sound + Pause ONLY) */}
         <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <button
+            type="button"
+            tabIndex={-1}
+            disabled={hud.bottlesCount <= 0 || hud.hiding}
+            aria-label={`Throw Bottle or Can (F): ${hud.bottlesCount} remaining`}
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onThrow();
+            }}
+            className={`hidden lg:flex min-h-[44px] px-3 rounded-lg border items-center gap-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+              hud.bottlesCount > 0 && !hud.hiding
+                ? 'border-[#4b7858] hover:border-[#69b879] text-[#d4eed9]'
+                : 'border-[#253028] text-[#617065]'
+            }`}
+            style={{ backgroundColor: 'rgba(10, 17, 13, 0.86)' }}
+          >
+            <BottleIconSvg className="w-4 h-4 shrink-0" />
+            <span className="font-mono-tabular">[F] ×{hud.bottlesCount}</span>
+          </button>
+
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-label="Toggle Flashlight (T)"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onFlashlight();
+            }}
+            className={`hidden lg:flex min-h-[44px] px-3 rounded-lg border items-center gap-1.5 text-xs font-semibold transition-colors cursor-pointer ${
+              hud.flashlightOn
+                ? 'border-[#8f8048] text-[#f2e7b5]'
+                : 'border-[#2d3e33] text-[#8ea193]'
+            }`}
+            style={{ backgroundColor: 'rgba(10, 17, 13, 0.86)' }}
+          >
+            <FlashlightIconSvg on={hud.flashlightOn} className="w-4 h-4 shrink-0" />
+            <span className="font-mono-tabular">[T] {hud.battery}%</span>
+          </button>
+
           <button
             type="button"
             tabIndex={-1}
@@ -245,21 +322,8 @@ export const GameHud: React.FC<GameHudProps> = ({
           <button
             type="button"
             tabIndex={-1}
-            aria-label="Restart run (R)"
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onRestart();
-            }}
-            className="min-h-[44px] min-w-[44px] rounded-lg border border-[#2d3e33] hover:border-[#53725d] flex items-center justify-center transition-colors cursor-pointer"
-            style={{ backgroundColor: 'rgba(10, 17, 13, 0.86)' }}
-          >
-            <RestartIconSvg />
-          </button>
-
-          <button
-            type="button"
-            tabIndex={-1}
-            aria-label="Pause game (P)"
+            data-testid="pause-button"
+            aria-label="Pause game (Esc / P)"
             onClick={(e) => {
               e.currentTarget.blur();
               onPause();
@@ -282,14 +346,53 @@ export const GameHud: React.FC<GameHudProps> = ({
         </div>
       )}
 
+      {/* Pocket Radio Through-Wall Whisper Message */}
+      {hud.radioMessage && (
+        <div
+          className="fixed top-44 sm:top-32 left-1/2 -translate-x-1/2 z-20 px-4 py-1.5 rounded border border-[#735c3c] text-xs sm:text-sm italic text-[#edd8b2] max-w-[90%] text-center"
+          style={{ backgroundColor: 'rgba(20, 15, 10, 0.9)' }}
+        >
+          Radio: {hud.radioMessage}
+        </div>
+      )}
+
       {/* Triangle Loop Echo Note Overlay */}
       {hud.echoNoteText && (
         <div
-          className="fixed top-48 sm:top-40 left-1/2 -translate-x-1/2 z-20 max-w-sm w-[90%] rounded-lg border border-[#7d734b] px-4 py-3 text-xs sm:text-sm text-[#ede5c9] shadow-xl"
+          className="fixed top-52 sm:top-44 left-1/2 -translate-x-1/2 z-20 max-w-sm w-[90%] rounded-lg border border-[#7d734b] px-4 py-3 text-xs sm:text-sm text-[#ede5c9] shadow-xl"
           style={{ backgroundColor: 'rgba(18, 17, 12, 0.94)' }}
         >
-          <p className="text-[10px] uppercase tracking-widest text-[#c4b178]">Recovered Note</p>
+          <p className="text-[10px] uppercase tracking-widest text-[#c4b178]">Past Cycle Echo</p>
           <p className="mt-1 italic leading-relaxed">{hud.echoNoteText}</p>
+        </div>
+      )}
+
+      {/* Inspectable Lore Card Overlay (Diary / Watch / Polaroid) */}
+      {hud.loreOverlay && (
+        <div
+          className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 max-w-sm w-[90%] rounded-xl border border-[#7a6d49] p-5 shadow-2xl pointer-events-auto"
+          style={{ backgroundColor: 'rgba(19, 17, 12, 0.96)' }}
+        >
+          <p className="text-[10px] uppercase tracking-[0.22em] text-[#c7b377]">
+            {hud.loreOverlay.kind === 'diary'
+              ? 'Torn Diary Page'
+              : hud.loreOverlay.kind === 'watch'
+                ? 'Backwards Pocket Watch'
+                : 'Faded Polaroid'}
+          </p>
+          <h3 className="mt-1 font-display text-xl font-bold text-[#f0ead6]">
+            {hud.loreOverlay.title}
+          </h3>
+          <p className="mt-2.5 text-sm italic leading-relaxed text-[#dbd2b8]">
+            {hud.loreOverlay.text}
+          </p>
+          <button
+            type="button"
+            onClick={onDismissLore}
+            className="mt-4 min-h-[40px] w-full rounded-lg border border-[#615639] hover:border-[#9e8c5e] bg-[#242016] text-xs font-semibold uppercase tracking-wider text-[#efe7ce] cursor-pointer"
+          >
+            [E] Put Away
+          </button>
         </div>
       )}
 
@@ -306,7 +409,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           }`}
         />
 
-        {hud.promptText && (
+        {hud.promptText && !hud.loreOverlay && (
           <button
             type="button"
             tabIndex={-1}
@@ -335,11 +438,16 @@ export const GameHud: React.FC<GameHudProps> = ({
         glassesActive={hud.glassesActive}
         glassesTimeLeft={hud.glassesTimeLeft}
         glassesCooldownLeft={hud.glassesCooldownLeft}
+        bottlesCount={hud.bottlesCount}
+        flashlightOn={hud.flashlightOn}
+        battery={hud.battery}
         promptText={hud.promptText}
         promptActionable={hud.promptActionable}
         onInteract={onInteract}
         onCrouch={onCrouch}
         onGlasses={onGlasses}
+        onThrow={onThrow}
+        onFlashlight={onFlashlight}
       />
 
       {/* Bottom-Center Compact 4-Slot Inventory Belt + Breaker Power Status */}

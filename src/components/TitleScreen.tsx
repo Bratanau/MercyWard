@@ -3,9 +3,10 @@ import { WardCrestSvg } from './GameIcons';
 
 interface TitleScreenProps {
   onStart: () => void;
+  onOpenSettings: () => void;
 }
 
-export const TitleScreen: React.FC<TitleScreenProps> = ({ onStart }) => {
+export const TitleScreen: React.FC<TitleScreenProps> = ({ onStart, onOpenSettings }) => {
   return (
     <div className="fixed inset-0 z-20 flex flex-col justify-between pointer-events-none p-5 sm:p-10">
       {/* Subtle dark vignette framing the live Grand Foyer 3D corridor */}
@@ -40,11 +41,11 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({ onStart }) => {
         </h1>
         <p className="mt-3 text-sm sm:text-base text-[#b7c8b9] max-w-md leading-relaxed">
           Explore the cavernous Ballroom, 2-story Library, and twisting wings while avoiding The
-          Resident. Use Spectral Glasses to spot her through walls, watch for shifting halls behind
-          your back, restore Boiler power, and sever the exit chains.
+          Resident. Crouch beneath cloth tables, hurl glass bottles to lure her away, heed the
+          Pocket Radio static, and break the eternal rebirth loop.
         </p>
 
-        <div className="mt-6 flex flex-wrap items-center gap-4">
+        <div className="mt-6 flex flex-wrap items-center gap-3">
           <button
             type="button"
             data-start="true"
@@ -53,10 +54,18 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({ onStart }) => {
           >
             Enter Estate
           </button>
+          <button
+            type="button"
+            data-testid="title-settings-button"
+            onClick={onOpenSettings}
+            className="min-h-[48px] px-6 py-3 rounded-lg border border-[#3a5241] hover:border-[#69b879] bg-[#0e1712]/90 text-[#dce8dd] font-medium text-base transition-colors cursor-pointer"
+          >
+            Settings
+          </button>
         </div>
 
         <p className="mt-6 text-xs sm:text-sm text-[#899e8d] tracking-wide">
-          WASD / Joystick Move · Mouse / Swipe Look · E Interact · G Glasses · C Crouch · Shift Sprint
+          WASD Move · Mouse / Swipe Look · E Interact · F / R-Click Throw · G Glasses · T Flashlight · C Crouch · Shift Sprint
         </p>
       </div>
     </div>

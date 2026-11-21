@@ -1,4 +1,4 @@
-export type GamePhase = 'title' | 'playing' | 'paused' | 'jumpscare' | 'gameover';
+export type GamePhase = 'title' | 'playing' | 'paused' | 'jumpscare' | 'rebirth' | 'gameover';
 
 export type ItemId = 'ward_key' | 'valve_wheel' | 'power_fuse' | 'bolt_cutters';
 
@@ -105,12 +105,15 @@ export interface ArchitectureShiftState {
   cabin3SecretOpen: boolean;
   endlessLoopActive: boolean;
   endlessLoopSolved: boolean;
-  redDoorAppeared: boolean;
+  phoneSpawned: boolean;
   midnightQuakeTriggered: boolean;
+  dreamRoomTimer: number;
+  dreamLastDoorId: string | null;
+  dreamShiftCount: number;
   gridOverrides: Record<string, '#' | '.'>;
 }
 
-export type HideSpotKind = 'locker' | 'wardrobe' | 'bed';
+export type HideSpotKind = 'locker' | 'wardrobe' | 'bed' | 'table';
 
 export interface HideSpotSpec {
   id: string;
@@ -125,6 +128,18 @@ export interface HideSpotSpec {
   eyeHeight: number;
 }
 
+export interface HideTableSpec {
+  id: string;
+  label: string;
+  floor: FloorIndex;
+  zone: ZoneId;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  kind: 'dining' | 'gurney';
+}
+
 export interface ObstacleBox {
   id: string;
   floor: FloorIndex;
@@ -133,6 +148,7 @@ export interface ObstacleBox {
   minZ: number;
   maxZ: number;
   blocksSight?: boolean;
+  blocksThreat?: boolean;
 }
 
 export interface CreakyFloorZone {
@@ -152,6 +168,68 @@ export interface KnockablePropRuntime {
   y: number;
   z: number;
   knocked: boolean;
+}
+
+export interface ThrowablePickupRuntime {
+  id: string;
+  kind: 'bottle' | 'can';
+  label: string;
+  floor: FloorIndex;
+  x: number;
+  y: number;
+  z: number;
+  surfaceY: number;
+  collected: boolean;
+}
+
+export interface ThrownProjectile {
+  id: number;
+  kind: 'bottle' | 'can';
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  floor: FloorIndex;
+}
+
+export type LoreKind = 'diary' | 'watch' | 'polaroid';
+
+export interface LoreItemRuntime {
+  id: string;
+  kind: LoreKind;
+  title: string;
+  text: string;
+  floor: FloorIndex;
+  x: number;
+  y: number;
+  z: number;
+  surfaceY: number;
+  inspected: boolean;
+}
+
+export interface RotaryPhoneRuntime {
+  id: string;
+  zone: ZoneId;
+  floor: FloorIndex;
+  x: number;
+  y: number;
+  z: number;
+  wallFacingYaw: number;
+  ringing: boolean;
+  answeredCount: number;
+  isLoopTrigger?: boolean;
+}
+
+export interface HauntedMirrorSpec {
+  id: string;
+  floor: FloorIndex;
+  zone: ZoneId;
+  x: number;
+  y: number;
+  z: number;
+  facingYaw: number;
 }
 
 export type ThreatMode =
@@ -188,6 +266,7 @@ export interface ThreatState {
   hitCooldown: number;
   alertFlash: number;
   sawPlayerHideId: string | null;
+  sawUnderTableId: string | null;
   checkingHideId: string | null;
 }
 
@@ -214,6 +293,23 @@ export interface PhantomEchoState {
   yaw: number;
 }
 
+export interface ParanoiaState {
+  noTurnTimer: number;
+  ghostFootstepsCooldown: number;
+  ghostFootstepsActive: boolean;
+  ghostEyeFlashTimer: number;
+  ghostEyeX: number;
+  ghostEyeY: number;
+  ghostEyeZ: number;
+  mirrorHauntTimer: number;
+  mirrorHauntedId: string | null;
+  mirrorLagYaw: number;
+  radioWhisperCooldown: number;
+  radioMessage: string | null;
+  radioMessageTimer: number;
+  phoneRingCooldown: number;
+}
+
 export interface PlayerState {
   x: number;
   y: number;
@@ -221,9 +317,14 @@ export interface PlayerState {
   yaw: number;
   pitch: number;
   crouching: boolean;
+  isUnderTable: boolean;
+  underTableId: string | null;
   sprinting: boolean;
   hidingSpotId: string | null;
   stamina: number;
+  flashlightOn: boolean;
+  battery: number; // 0..100
+  bottlesCount: number;
   strikesRemaining: number;
   invulnTimer: number;
   noiseLevel: number;
@@ -240,6 +341,7 @@ export interface GameHudSnapshot {
   maxStrikes: number;
   stamina: number;
   crouching: boolean;
+  isUnderTable: boolean;
   hiding: boolean;
   hidingKind: HideSpotKind | null;
   currentFloor: 1 | 2;
@@ -247,18 +349,27 @@ export interface GameHudSnapshot {
   powerRestored: boolean;
   inventory: ItemId[];
   selectedSlot: number;
+  bottlesCount: number;
+  flashlightOn: boolean;
+  battery: number;
   currentZone: ZoneId;
   objectiveText: string;
   promptText: string | null;
   promptActionable: boolean;
   dangerLevel: number;
+  radioStaticLevel: number;
+  radioMessage: string | null;
   threatMode: ThreatMode;
   roomsUnlocked: number;
   itemsFound: number;
+  loreFound: number;
+  loreTotal: number;
   damageFlash: number;
   statusBanner: string | null;
   echoNoteText: string | null;
+  loreOverlay: { title: string; kind: LoreKind; text: string } | null;
   jumpscareProgress: number;
+  rebirthProgress: number;
   glassesActive: boolean;
   glassesTimeLeft: number;
   glassesCooldownLeft: number;
@@ -267,4 +378,5 @@ export interface GameHudSnapshot {
   quakeTriggered: boolean;
   endlessLoopActive: boolean;
   cabin3Sealed: boolean;
+  phoneRinging: boolean;
 }

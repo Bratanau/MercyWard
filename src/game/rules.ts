@@ -5,25 +5,33 @@ import {
   FLOOR2_Y,
   FLOOR_GRIDS,
   FURNITURE_OBSTACLES,
+  generateProceduralWingOverrides,
   getFloorIndexFromY,
   getSurfaceY,
   getZoneAt,
   GRID_COLS,
   GRID_ROWS,
+  HAUNTED_MIRRORS,
   HIDE_SPOTS,
+  HIDE_TABLES,
   INITIAL_DOORS,
   INITIAL_GLASS_SHARDS,
   INITIAL_KNOCKABLES,
+  INITIAL_LORE_ITEMS,
+  INITIAL_ROTARY_PHONES,
+  INITIAL_THROWABLES,
   isLibraryAtriumCell,
   ITEM_CATALOG,
   ITEM_SPAWN_POINTS,
   MAJOR_INSPECT_ZONES,
   PLAYER_SPAWN,
+  RANDOM_SPAWN_POINTS,
   STEAM_VALVE_POS,
   THREAT_PATROL_WAYPOINTS,
   THREAT_SPAWN,
   TILE_SIZE,
 } from './mapData';
+import { DEFAULT_SETTINGS, GameSettings } from './settings';
 import {
   ArchitectureShiftState,
   DoorRuntime,
@@ -35,10 +43,16 @@ import {
   GlassShardRuntime,
   ItemId,
   KnockablePropRuntime,
+  LoreItemRuntime,
+  LoreKind,
   ObstacleBox,
+  ParanoiaState,
   PhantomEchoState,
   PlayerState,
+  RotaryPhoneRuntime,
   ThreatState,
+  ThrowablePickupRuntime,
+  ThrownProjectile,
   WorldItemRuntime,
 } from './types';
 
@@ -48,7 +62,7 @@ export const WALK_SPEED = 3.5;
 export const SPRINT_SPEED = 5.4;
 export const CROUCH_SPEED = 2.1;
 
-// Pacing & Monster Rebalance (Slower wander, sprintable chase, long acoustic terror)
+// Monster Speeds (scaled live by settings.monsterSpeedMult)
 export const THREAT_PATROL_SPEED = 1.8;
 export const THREAT_INVESTIGATE_SPEED = 2.65;
 export const THREAT_CHASE_SPEED = 4.65;
@@ -59,6 +73,9 @@ export const CATCH_RANGE = 1.18;
 export const THREAT_SIGHT_RANGE = 17.5;
 export const DOOR_SMASH_DURATION = 2.0;
 
+export const JUMPSCARE_DURATION = 1.45;
+export const REBIRTH_DURATION = 1.5;
+
 // Spectral Glasses Constants
 export const GLASSES_ACTIVE_DURATION = 4.0;
 export const GLASSES_COOLDOWN_DURATION = 25.0;
@@ -66,6 +83,7 @@ export const GLASSES_COOLDOWN_DURATION = 25.0;
 export interface SimulationState {
   phase: GamePhase;
   victory: boolean;
+  seed: number;
   loopCount: number;
   elapsedSeconds: number;
   steamShutOff: boolean;
@@ -75,7 +93,16 @@ export interface SimulationState {
   doors: DoorRuntime[];
   items: WorldItemRuntime[];
   shards: GlassShardRuntime[];
+  throwables: ThrowablePickupRuntime[];
+  projectiles: ThrownProjectile[];
+  nextProjectileId: number;
+  lore: LoreItemRuntime[];
+  loreOverlay: { title: string; kind: LoreKind; text: string } | null;
+  loreOverlayTimer: number;
+  phones: RotaryPhoneRuntime[];
+  paranoia: ParanoiaState;
   glasses: GlassesState;
+  glassesCooldownMax: number;
   shifts: ArchitectureShiftState;
   knockables: KnockablePropRuntime[];
   inventory: ItemId[];
@@ -91,10 +118,13 @@ export interface SimulationState {
   phantomEcho: PhantomEchoState;
   jumpscareTimer: number;
   jumpscareProgress: number;
+  rebirthTimer: number;
+  rebirthProgress: number;
   escapeTimer: number;
   escaping: boolean;
   lastDeathReason: string;
   lockerCheckCooldown: number;
+  lastRoomZone: string;
 }
 
 export interface InputSample {
@@ -104,6 +134,8 @@ export interface InputSample {
   crouchToggle: boolean;
   interactPressed: boolean;
   glassesToggle?: boolean;
+  throwPressed?: boolean;
+  flashlightToggle?: boolean;
   yawDelta: number;
   pitchDelta: number;
 }
@@ -111,7 +143,8 @@ export interface InputSample {
 export type ShiftEventKind =
   | 'cabin3_sealed'
   | 'endless_loop'
-  | 'red_door_opened'
+  | 'phone_loop_broken'
+  | 'dream_shift'
   | 'midnight_quake';
 
 export interface StepEvents {
@@ -121,6 +154,16 @@ export interface StepEvents {
   propKnocked: string | null;
   pickup: ItemId | null;
   shardPickup: boolean;
+  throwablePickup: boolean;
+  bottleThrown: boolean;
+  bottleShattered: { x: number; y: number; z: number; floor: FloorIndex } | null;
+  loreInspected: boolean;
+  phoneRinging: boolean;
+  phoneAnswered: boolean;
+  radioWhisper: boolean;
+  ghostFootstepsBehind: boolean;
+  ghostEyeFlash: boolean;
+  mirrorHaunted: boolean;
   glassesToggled: boolean;
   midnightQuake: boolean;
   architectureShift: ShiftEventKind | null;
@@ -136,6 +179,8 @@ export interface StepEvents {
   threatAlerted: boolean;
   playerHit: boolean;
   jumpscareStarted: boolean;
+  rebirthStarted: boolean;
+  rebirthCompleted: boolean;
   escaped: boolean;
   defeated: boolean;
   echoInspected: boolean;
@@ -145,7 +190,9 @@ export interface StepEvents {
 export type InteractionTarget =
   | { kind: 'item'; item: WorldItemRuntime; label: string; actionable: boolean }
   | { kind: 'shard'; shard: GlassShardRuntime; label: string; actionable: boolean }
-  | { kind: 'red_door'; label: string; actionable: boolean }
+  | { kind: 'throwable'; pickup: ThrowablePickupRuntime; label: string; actionable: boolean }
+  | { kind: 'lore'; lore: LoreItemRuntime; label: string; actionable: boolean }
+  | { kind: 'phone'; phone: RotaryPhoneRuntime; label: string; actionable: boolean }
   | { kind: 'door'; door: DoorRuntime; label: string; actionable: boolean }
   | { kind: 'valve'; label: string; actionable: boolean }
   | { kind: 'breaker'; label: string; actionable: boolean }
@@ -207,11 +254,32 @@ export function assignRandomizedItems(seed: number): WorldItemRuntime[] {
   return result;
 }
 
+function pickDistantThreatWaypoint(px: number, pz: number, seed: number): {
+  spawn: { x: number; y: number; z: number };
+  patrolIndex: number;
+} {
+  const candidates = THREAT_PATROL_WAYPOINTS.map((wp, idx) => ({
+    wp,
+    idx,
+    dist: Math.hypot(wp.x - px, wp.z - pz),
+  })).filter((c) => c.dist >= 19.5);
+
+  if (candidates.length === 0) {
+    return { spawn: { ...THREAT_SPAWN }, patrolIndex: 1 };
+  }
+  const chosen = candidates[Math.abs(seed) % candidates.length];
+  return {
+    spawn: { ...chosen.wp },
+    patrolIndex: (chosen.idx + 1) % THREAT_PATROL_WAYPOINTS.length,
+  };
+}
+
 export interface CreateSimOptions {
   autostart?: boolean;
   seed?: number;
   loopCount?: number;
   previousEcho?: EchoRecord | null;
+  randomizeSpawn?: boolean;
 }
 
 export function createInitialSimulation(options: CreateSimOptions | boolean = false): SimulationState {
@@ -220,41 +288,60 @@ export function createInitialSimulation(options: CreateSimOptions | boolean = fa
   const autostart = Boolean(opts.autostart);
   const loopCount = opts.loopCount ?? 1;
   const seed = opts.seed ?? (loopCount * 7919 + 404);
+  const useRandomSpawn = opts.randomizeSpawn ?? false;
+
+  const rand = makeRng(seed + 19);
+  const chosenSpawn = useRandomSpawn
+    ? RANDOM_SPAWN_POINTS[Math.floor(rand() * RANDOM_SPAWN_POINTS.length)]
+    : { ...PLAYER_SPAWN, floor: 0 as FloorIndex, zone: 'entrance' as const };
+  const spawnYaw = useRandomSpawn ? (rand() * Math.PI * 2) - Math.PI : chosenSpawn.yaw;
+
+  const wingOverrides = generateProceduralWingOverrides(seed);
+  const threatPick = useRandomSpawn
+    ? pickDistantThreatWaypoint(chosenSpawn.x, chosenSpawn.z, seed)
+    : { spawn: { ...THREAT_SPAWN }, patrolIndex: 1 };
+  const targetWp = THREAT_PATROL_WAYPOINTS[threatPick.patrolIndex];
 
   return {
     phase: autostart ? 'playing' : 'title',
     victory: false,
+    seed,
     loopCount,
     elapsedSeconds: 0,
     steamShutOff: false,
     powerRestored: false,
     player: {
-      x: PLAYER_SPAWN.x,
-      y: PLAYER_SPAWN.y,
-      z: PLAYER_SPAWN.z,
-      yaw: PLAYER_SPAWN.yaw,
+      x: chosenSpawn.x,
+      y: chosenSpawn.y,
+      z: chosenSpawn.z,
+      yaw: spawnYaw,
       pitch: 0,
       crouching: false,
+      isUnderTable: false,
+      underTableId: null,
       sprinting: false,
       hidingSpotId: null,
       stamina: 100,
-      strikesRemaining: 3,
+      flashlightOn: true,
+      battery: 100,
+      bottlesCount: 1,
+      strikesRemaining: 1, // 1-hit lethal threat!
       invulnTimer: 0,
       noiseLevel: 0,
       stepAccum: 0,
       creakCooldown: 0,
     },
     threat: {
-      x: THREAT_SPAWN.x,
-      y: THREAT_SPAWN.y,
-      z: THREAT_SPAWN.z,
+      x: threatPick.spawn.x,
+      y: threatPick.spawn.y,
+      z: threatPick.spawn.z,
       yaw: THREAT_SPAWN.yaw,
       mode: 'patrol',
-      targetX: THREAT_PATROL_WAYPOINTS[1].x,
-      targetY: THREAT_PATROL_WAYPOINTS[1].y,
-      targetZ: THREAT_PATROL_WAYPOINTS[1].z,
+      targetX: targetWp.x,
+      targetY: targetWp.y,
+      targetZ: targetWp.z,
       waypoints: THREAT_PATROL_WAYPOINTS.map((p) => ({ ...p })),
-      patrolIndex: 1,
+      patrolIndex: threatPick.patrolIndex,
       searchTimer: 0,
       sniffTimer: 0,
       smashTimer: 0,
@@ -268,6 +355,7 @@ export function createInitialSimulation(options: CreateSimOptions | boolean = fa
       hitCooldown: 0,
       alertFlash: 0,
       sawPlayerHideId: null,
+      sawUnderTableId: null,
       checkingHideId: null,
     },
     doors: INITIAL_DOORS.map((d) => ({
@@ -277,21 +365,48 @@ export function createInitialSimulation(options: CreateSimOptions | boolean = fa
     })),
     items: assignRandomizedItems(seed),
     shards: INITIAL_GLASS_SHARDS.map((s) => ({ ...s, collected: false })),
+    throwables: INITIAL_THROWABLES.map((t) => ({ ...t, collected: false })),
+    projectiles: [],
+    nextProjectileId: 1,
+    lore: INITIAL_LORE_ITEMS.map((l) => ({ ...l, inspected: false })),
+    loreOverlay: null,
+    loreOverlayTimer: 0,
+    phones: INITIAL_ROTARY_PHONES.map((p) => ({ ...p, ringing: false, answeredCount: 0 })),
+    paranoia: {
+      noTurnTimer: 0,
+      ghostFootstepsCooldown: 10,
+      ghostFootstepsActive: false,
+      ghostEyeFlashTimer: 0,
+      ghostEyeX: 0,
+      ghostEyeY: 0,
+      ghostEyeZ: 0,
+      mirrorHauntTimer: 0,
+      mirrorHauntedId: null,
+      mirrorLagYaw: spawnYaw,
+      radioWhisperCooldown: 4,
+      radioMessage: null,
+      radioMessageTimer: 0,
+      phoneRingCooldown: 18,
+    },
     glasses: {
       active: false,
       activeTimer: 0,
       cooldownTimer: 0,
       shardsCollected: 0,
     },
+    glassesCooldownMax: DEFAULT_SETTINGS.glassesCooldownSec,
     shifts: {
       cabin3PickupTaken: false,
       cabin3Sealed: false,
       cabin3SecretOpen: false,
       endlessLoopActive: false,
       endlessLoopSolved: false,
-      redDoorAppeared: false,
+      phoneSpawned: false,
       midnightQuakeTriggered: false,
-      gridOverrides: {},
+      dreamRoomTimer: 0,
+      dreamLastDoorId: null,
+      dreamShiftCount: 0,
+      gridOverrides: wingOverrides,
     },
     knockables: INITIAL_KNOCKABLES.map((k) => ({ ...k, knocked: false })),
     inventory: [],
@@ -319,10 +434,13 @@ export function createInitialSimulation(options: CreateSimOptions | boolean = fa
     },
     jumpscareTimer: 0,
     jumpscareProgress: 0,
+    rebirthTimer: 0,
+    rebirthProgress: 0,
     escapeTimer: 0,
     escaping: false,
-    lastDeathReason: 'The Resident cornered you in the dark.',
+    lastDeathReason: 'The Resident devoured you in the dark.',
     lockerCheckCooldown: 10,
+    lastRoomZone: chosenSpawn.zone,
   };
 }
 
@@ -440,7 +558,7 @@ export function resolveCircleMovement(
   doors: readonly DoorRuntime[],
   includeFurniture = true,
   gridOverrides?: Readonly<Record<string, '#' | '.'>>,
-  redDoorBlocking = false
+  allowUnderTables = false
 ): { x: number; y: number; z: number } {
   const totalDist = Math.hypot(dx, dz);
   const steps = Math.max(1, Math.ceil(totalDist / (radius * 0.45)));
@@ -452,7 +570,7 @@ export function resolveCircleMovement(
     pos.y = getSurfaceY(pos.x, pos.z, getFloorIndexFromY(pos.y));
     const activeFloor = getFloorIndexFromY(pos.y);
 
-    // 1. Walls (3x3) on active floor (respecting dynamic Architecture Shifts)
+    // 1. Walls (3x3) on active floor (respecting Procedural + Dynamic Architecture Shifts)
     const cell = worldToGrid(pos.x, pos.z);
     for (let r = cell.row - 1; r <= cell.row + 1; r++) {
       for (let c = cell.col - 1; c <= cell.col + 1; c++) {
@@ -478,24 +596,22 @@ export function resolveCircleMovement(
       }
     }
 
-    // 2b. Non-Euclidean Red Door barrier inside Endless Corridor
-    if (redDoorBlocking && activeFloor === ENDLESS_CORRIDOR_BOUNDS.floor) {
-      const rx = (ENDLESS_CORRIDOR_BOUNDS.redDoorGridX + 0.5) * TILE_SIZE;
-      const minZ = ENDLESS_CORRIDOR_BOUNDS.redDoorGridZ * TILE_SIZE;
-      pushCircleOutOfBox(pos, radius, {
-        minX: rx - 0.16,
-        maxX: rx + 0.16,
-        minZ,
-        maxZ: minZ + TILE_SIZE,
-      });
-    }
-
-    // 3. Furniture & Atrium Guardrails on active floor
+    // 3. Solid Furniture, Pillars, Boiler Tank, Bookshelves & Atrium Guardrails
     if (includeFurniture) {
       for (let i = 0; i < FURNITURE_OBSTACLES.length; i++) {
         const obs = FURNITURE_OBSTACLES[i];
         if (obs.floor === activeFloor) {
           pushCircleOutOfBox(pos, radius, obs);
+        }
+      }
+
+      // Draped Hiding Tables: solid to standing player & Monster; crouching player slides underneath!
+      if (!allowUnderTables) {
+        for (let i = 0; i < HIDE_TABLES.length; i++) {
+          const tbl = HIDE_TABLES[i];
+          if (tbl.floor === activeFloor) {
+            pushCircleOutOfBox(pos, radius, tbl);
+          }
         }
       }
     }
@@ -554,7 +670,7 @@ export function hasLineOfSight(
   return true;
 }
 
-function isGridCellPassableForAI(
+export function isGridCellPassableForAI(
   col: number,
   row: number,
   floor: FloorIndex,
@@ -579,7 +695,63 @@ function isGridCellPassableForAI(
       }
     }
   }
+
+  // Mark cells whose center is occupied by heavy solid obstacles so AI routes cleanly around them!
+  const cx = (col + 0.5) * TILE_SIZE;
+  const cz = (row + 0.5) * TILE_SIZE;
+  for (let f = 0; f < FURNITURE_OBSTACLES.length; f++) {
+    const obs = FURNITURE_OBSTACLES[f];
+    if (obs.floor === floor && obs.blocksThreat && obs.id !== 'library_f2_stair_guard') {
+      if (cx >= obs.minX && cx <= obs.maxX && cz >= obs.minZ && cz <= obs.maxZ) {
+        return false;
+      }
+    }
+  }
+  for (let t = 0; t < HIDE_TABLES.length; t++) {
+    const tbl = HIDE_TABLES[t];
+    if (tbl.floor === floor) {
+      if (cx >= tbl.minX && cx <= tbl.maxX && cz >= tbl.minZ && cz <= tbl.maxZ) {
+        return false;
+      }
+    }
+  }
+
   return true;
+}
+
+export function isStepBlockedByProps(
+  fl: FloorIndex,
+  fromCol: number,
+  fromRow: number,
+  toCol: number,
+  toRow: number
+): boolean {
+  const ax = (fromCol + 0.5) * TILE_SIZE;
+  const az = (fromRow + 0.5) * TILE_SIZE;
+  const bx = (toCol + 0.5) * TILE_SIZE;
+  const bz = (toRow + 0.5) * TILE_SIZE;
+  const minSegX = Math.min(ax, bx) - 0.12;
+  const maxSegX = Math.max(ax, bx) + 0.12;
+  const minSegZ = Math.min(az, bz) - 0.12;
+  const maxSegZ = Math.max(az, bz) + 0.12;
+
+  for (let f = 0; f < FURNITURE_OBSTACLES.length; f++) {
+    const obs = FURNITURE_OBSTACLES[f];
+    if (obs.floor === fl && obs.blocksThreat) {
+      if (maxSegX >= obs.minX && minSegX <= obs.maxX && maxSegZ >= obs.minZ && minSegZ <= obs.maxZ) {
+        return true;
+      }
+    }
+  }
+  for (let t = 0; t < HIDE_TABLES.length; t++) {
+    const tbl = HIDE_TABLES[t];
+    if (tbl.floor === fl) {
+      if (maxSegX >= tbl.minX && minSegX <= tbl.maxX && maxSegZ >= tbl.minZ && minSegZ <= tbl.maxZ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -587,7 +759,7 @@ function isGridCellPassableForAI(
  * - Main Wooden Staircase (11, 7)
  * - West Service / Cellar Staircase (2, 10)
  * - Library Grand Staircase (21, 13)
- * Dynamically honors sim.shifts.gridOverrides (< 0.2ms on 2*23*23 = 1,058 nodes).
+ * Dynamically honors sim.shifts.gridOverrides & solid props (< 0.2ms on 2*23*23 = 1,058 nodes).
  */
 export function findNextGridStep(
   fromX: number,
@@ -647,7 +819,10 @@ export function findNextGridStep(
       if (nc < 0 || nc >= GRID_COLS || nr < 0 || nr >= GRID_ROWS) return;
       const nIdx = encode(nfl, nc, nr);
       if (visited[nIdx]) return;
-      if (!isGridCellPassableForAI(nc, nr, nfl, doors, gridOverrides)) return;
+      if (nIdx !== goalIdx) {
+        if (!isGridCellPassableForAI(nc, nr, nfl, doors, gridOverrides)) return;
+        if (nfl === fl && isStepBlockedByProps(fl, cc, cr, nc, nr)) return;
+      }
       visited[nIdx] = 1;
       parent[nIdx] = cur;
       queue[tail++] = nIdx;
@@ -702,7 +877,8 @@ export function findNextGridStep(
 }
 
 export function findBestInteraction(sim: SimulationState): InteractionTarget | null {
-  const { player, items, shards, doors, inventory, echoRecord, shifts } = sim;
+  const { player, items, shards, throwables, lore, phones, doors, inventory, echoRecord, shifts } =
+    sim;
 
   if (player.hidingSpotId) {
     const spot = HIDE_SPOTS.find((h) => h.id === player.hidingSpotId);
@@ -763,7 +939,7 @@ export function findBestInteraction(sim: SimulationState): InteractionTarget | n
     }
   }
 
-  // 1b. Collectible Glass Shards (recharges Spectral Glasses!)
+  // 1b. Collectible Glass Shards
   for (const shard of shards) {
     if (shard.collected) continue;
     const score = scoreTarget(shard.x, shard.y, shard.z, INTERACT_RANGE);
@@ -778,16 +954,47 @@ export function findBestInteraction(sim: SimulationState): InteractionTarget | n
     }
   }
 
-  // 1c. Red Door inside Floor 2 Endless Corridor
-  if (shifts.endlessLoopActive && shifts.redDoorAppeared && !shifts.endlessLoopSolved) {
-    const rdx = (ENDLESS_CORRIDOR_BOUNDS.redDoorGridX + 0.5) * TILE_SIZE;
-    const rdz = (ENDLESS_CORRIDOR_BOUNDS.redDoorGridZ + 0.5) * TILE_SIZE;
-    const score = scoreTarget(rdx, FLOOR2_Y, rdz, INTERACT_RANGE + 0.4);
+  // 1c. Throwable Bottles & Cans
+  for (const pickup of throwables) {
+    if (pickup.collected) continue;
+    const score = scoreTarget(pickup.x, pickup.y, pickup.z, INTERACT_RANGE);
     if (score !== null && score < bestScore) {
       bestScore = score;
       best = {
-        kind: 'red_door',
-        label: 'Open the Red Door (Break the Corridor)',
+        kind: 'throwable',
+        pickup,
+        label: `Pick up ${pickup.label} (Throw [F])`,
+        actionable: true,
+      };
+    }
+  }
+
+  // 1d. Rotary Phones (Ringing or Ambient)
+  for (const phone of phones) {
+    if (phone.isLoopTrigger && !shifts.endlessLoopActive) continue;
+    const score = scoreTarget(phone.x, phone.y, phone.z, INTERACT_RANGE + 0.3);
+    if (score !== null && score < bestScore) {
+      bestScore = score;
+      best = {
+        kind: 'phone',
+        phone,
+        label: phone.ringing
+          ? 'Answer Ringing Rotary Phone'
+          : 'Inspect Rotary Telephone',
+        actionable: true,
+      };
+    }
+  }
+
+  // 1e. Lore Collectibles (Diaries, Backwards Watches, Polaroids)
+  for (const entry of lore) {
+    const score = scoreTarget(entry.x, entry.y, entry.z, INTERACT_RANGE);
+    if (score !== null && score < bestScore) {
+      bestScore = score;
+      best = {
+        kind: 'lore',
+        lore: entry,
+        label: entry.inspected ? `Re-read ${entry.title}` : `Inspect ${entry.title}`,
         actionable: true,
       };
     }
@@ -947,22 +1154,69 @@ export function performInteraction(sim: SimulationState, events: StepEvents): vo
     return;
   }
 
-  if (target.kind === 'red_door') {
-    sim.shifts.endlessLoopSolved = true;
-    sim.shifts.endlessLoopActive = false;
-    sim.statusBanner = 'Reality snaps back — the Red Door yields!';
-    sim.statusBannerTimer = 2.8;
-    events.doorUnlocked = true;
-    events.architectureShift = 'red_door_opened';
+  if (target.kind === 'throwable') {
+    target.pickup.collected = true;
+    sim.player.bottlesCount += 1;
+    sim.statusBanner = `${target.pickup.label} added (Press [F] or Right-Click to throw)`;
+    sim.statusBannerTimer = 2.4;
+    events.throwablePickup = true;
+    return;
+  }
+
+  if (target.kind === 'lore') {
+    target.lore.inspected = true;
+    sim.loreOverlay = {
+      title: target.lore.title,
+      kind: target.lore.kind,
+      text: target.lore.text,
+    };
+    sim.loreOverlayTimer = 6.2;
+    sim.statusBanner = `Read: ${target.lore.title}`;
+    sim.statusBannerTimer = 2.6;
+    events.loreInspected = true;
+    return;
+  }
+
+  if (target.kind === 'phone') {
+    const phone = target.phone;
+    phone.ringing = false;
+    phone.answeredCount += 1;
+    events.phoneAnswered = true;
+
+    if (phone.isLoopTrigger && sim.shifts.endlessLoopActive && !sim.shifts.endlessLoopSolved) {
+      sim.shifts.endlessLoopSolved = true;
+      sim.shifts.endlessLoopActive = false;
+      sim.shifts.gridOverrides[
+        gridOverrideKey(
+          ENDLESS_CORRIDOR_BOUNDS.floor,
+          ENDLESS_CORRIDOR_BOUNDS.shiftingWallGridX,
+          ENDLESS_CORRIDOR_BOUNDS.shiftingWallGridZ
+        )
+      ] = '.';
+      sim.paranoia.radioMessage = '"Turn around... the hallway behind you opened."';
+      sim.paranoia.radioMessageTimer = 3.6;
+      sim.statusBanner = '"Turn around..." — The hallway shifts open behind you!';
+      sim.statusBannerTimer = 3.4;
+      events.architectureShift = 'phone_loop_broken';
+      events.doorUnlocked = true;
+    } else {
+      const tZone = getZoneAt(sim.threat.x, sim.threat.y, sim.threat.z).replace('_', ' ');
+      const tFloor = getFloorIndexFromY(sim.threat.y) === 1 ? 'Floor 2' : 'Floor 1';
+      sim.paranoia.radioMessage = `"Receiver crackles: She is prowling ${tFloor} (${tZone})..."`;
+      sim.paranoia.radioMessageTimer = 3.5;
+      sim.statusBanner = `Static on the line: She is near ${tFloor} ${tZone}...`;
+      sim.statusBannerTimer = 3.0;
+    }
     return;
   }
 
   if (target.kind === 'echo' && sim.echoRecord) {
     sim.echoRecord.inspected = true;
     sim.player.stamina = Math.min(100, sim.player.stamina + 35);
+    sim.player.battery = Math.min(100, sim.player.battery + 35);
     sim.echoNoteText = sim.echoRecord.noteText;
     sim.echoNoteTimer = 5.5;
-    sim.statusBanner = 'Recovered Echo Note (+35 Stamina)';
+    sim.statusBanner = 'Recovered Past Body Note (+35 Stamina & Battery)';
     sim.statusBannerTimer = 2.6;
     events.echoInspected = true;
     return;
@@ -999,7 +1253,6 @@ export function performInteraction(sim: SimulationState, events: StepEvents): vo
       sim.player.noiseLevel = Math.max(sim.player.noiseLevel, 0.9);
       events.breakerRestored = true;
 
-      // Scenario 3: MIDNIGHT QUAKE — Seal Main Staircase & Boiler-Central shortcut, blast open West Cellar route!
       if (!sim.shifts.midnightQuakeTriggered) {
         sim.shifts.midnightQuakeTriggered = true;
         sim.shifts.gridOverrides[gridOverrideKey(0, 6, 6)] = '#';
@@ -1039,7 +1292,8 @@ export function performInteraction(sim: SimulationState, events: StepEvents): vo
           PLAYER_RADIUS,
           sim.doors,
           true,
-          sim.shifts.gridOverrides
+          sim.shifts.gridOverrides,
+          spot.kind === 'bed'
         );
         sim.player.x = safe.x;
         sim.player.y = spot.y;
@@ -1067,6 +1321,8 @@ export function performInteraction(sim: SimulationState, events: StepEvents): vo
 
         sim.player.hidingSpotId = spot.id;
         sim.player.crouching = false;
+        sim.player.isUnderTable = false;
+        sim.player.underTableId = null;
         sim.player.sprinting = false;
         sim.player.x = spot.x;
         sim.player.y = spot.y;
@@ -1088,8 +1344,10 @@ export function performInteraction(sim: SimulationState, events: StepEvents): vo
 
   if (target.kind === 'door') {
     const door = target.door;
+    sim.shifts.dreamLastDoorId = door.id;
     if (door.state === 'open') {
       door.state = 'closed';
+      sim.shifts.dreamRoomTimer = 0;
       sim.player.noiseLevel = Math.max(sim.player.noiseLevel, 0.25);
       events.doorOpened = true;
     } else if (door.state === 'closed') {
@@ -1142,7 +1400,7 @@ export function computeObjectiveText(sim: SimulationState): string {
   const hasCutters = sim.inventory.includes('bolt_cutters');
 
   if (sim.shifts.endlessLoopActive && !sim.shifts.endlessLoopSolved) {
-    return 'The corridor stretches endlessly — look behind you for the Red Door';
+    return 'A rotary telephone rings inside the endless hall — answer it to break the loop';
   }
   if (sim.powerRestored && hasCutters) {
     return 'Cut the chains on the Floor 1 Entrance Exit Door and escape';
@@ -1158,53 +1416,179 @@ export function computeObjectiveText(sim: SimulationState): string {
     return 'Unlock the Security Storage Room in SE Floor 1';
   }
   if (!sim.powerRestored) {
-    return 'Search the Grand Ballroom, Library & Cabins for the Valve, Fuse & Cutters';
+    return 'Search the Ballroom, Library & Cabins for the Valve, Fuse & Cutters';
   }
   return 'Find the Heavy Bolt Cutters to cut the Entrance Exit chains';
 }
 
 function triggerPlayerStrike(sim: SimulationState, events: StepEvents, reason: string): void {
-  const { player, threat, shifts } = sim;
-  player.strikesRemaining = Math.max(0, player.strikesRemaining - 1);
+  const { player, threat } = sim;
+  player.strikesRemaining = 0;
   sim.damageFlash = 1.0;
   threat.hitCooldown = 3.0;
   player.invulnTimer = 2.6;
   sim.lastDeathReason = reason;
   events.playerHit = true;
 
-  if (player.strikesRemaining <= 0) {
-    sim.phase = 'jumpscare';
-    sim.jumpscareTimer = 1.15;
-    sim.jumpscareProgress = 0;
-    sim.statusBanner = null;
-    events.jumpscareStarted = true;
-  } else {
-    const awayX = player.x - threat.x;
-    const awayZ = player.z - threat.z;
-    const awayLen = Math.max(0.01, Math.hypot(awayX, awayZ));
-    const pushed = resolveCircleMovement(
-      player.x,
-      player.y,
-      player.z,
-      (awayX / awayLen) * 1.1,
-      (awayZ / awayLen) * 1.1,
-      PLAYER_RADIUS,
-      sim.doors,
-      true,
-      shifts.gridOverrides
-    );
-    player.x = pushed.x;
-    player.y = pushed.y;
-    player.z = pushed.z;
-    player.stamina = Math.max(player.stamina, 70);
-    sim.statusBanner = `Struck! ${player.strikesRemaining} ${
-      player.strikesRemaining === 1 ? 'chance' : 'chances'
-    } remaining`;
-    sim.statusBannerTimer = 2.6;
-  }
+  // Instant 1-Hit Lethal Devour Jumpscare
+  sim.phase = 'jumpscare';
+  sim.jumpscareTimer = JUMPSCARE_DURATION;
+  sim.jumpscareProgress = 0;
+  sim.statusBanner = null;
+  sim.loreOverlay = null;
+  events.jumpscareStarted = true;
 }
 
-function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): void {
+export function rebirthFromLoop(sim: SimulationState, events: StepEvents): void {
+  const deathZone = getZoneAt(sim.player.x, sim.player.y, sim.player.z);
+  sim.echoRecord = {
+    loopNumber: sim.loopCount,
+    deathX: sim.player.x,
+    deathY: sim.player.y,
+    deathZ: sim.player.z,
+    noteText: `Loop #${sim.loopCount}: Killed near ${deathZone.replace('_', ' ')}. Every time I fall, I wake in another bed with everything I carried.`,
+    inspected: false,
+  };
+
+  sim.loopCount += 1;
+  sim.phase = 'playing';
+  sim.rebirthTimer = 0;
+  sim.rebirthProgress = 0;
+  sim.jumpscareTimer = 0;
+  sim.jumpscareProgress = 0;
+  sim.damageFlash = 0;
+
+  // Deterministic + cycle-rotated randomized spawn point
+  const rng = makeRng(sim.seed + sim.loopCount * 997);
+  const spawnIdx = Math.floor(rng() * RANDOM_SPAWN_POINTS.length);
+  const sp = RANDOM_SPAWN_POINTS[spawnIdx];
+
+  sim.player.x = sp.x;
+  sim.player.y = sp.y;
+  sim.player.z = sp.z;
+  sim.player.yaw = (rng() * Math.PI * 2) - Math.PI;
+  sim.player.pitch = 0;
+  sim.player.crouching = false;
+  sim.player.isUnderTable = false;
+  sim.player.underTableId = null;
+  sim.player.sprinting = false;
+  sim.player.hidingSpotId = null;
+  sim.player.stamina = 100;
+  sim.player.battery = Math.max(sim.player.battery, 75);
+  sim.player.flashlightOn = true;
+  sim.player.strikesRemaining = 1;
+  sim.player.invulnTimer = 2.4;
+  sim.player.noiseLevel = 0;
+
+  // Relocate Threat > 19.5m away on patrol
+  const threatPick = pickDistantThreatWaypoint(sp.x, sp.z, sim.seed + sim.loopCount * 131);
+  sim.threat.x = threatPick.spawn.x;
+  sim.threat.y = threatPick.spawn.y;
+  sim.threat.z = threatPick.spawn.z;
+  sim.threat.mode = 'patrol';
+  sim.threat.patrolIndex = threatPick.patrolIndex;
+  const wp = THREAT_PATROL_WAYPOINTS[threatPick.patrolIndex];
+  sim.threat.targetX = wp.x;
+  sim.threat.targetY = wp.y;
+  sim.threat.targetZ = wp.z;
+  sim.threat.sawPlayerHideId = null;
+  sim.threat.sawUnderTableId = null;
+  sim.threat.hitCooldown = 2.5;
+  sim.threat.headTilt = 0;
+
+  sim.statusBanner = `Loop #${sim.loopCount} — You wake gasping in ${sp.zone.replace('_', ' ')}. Progress preserved.`;
+  sim.statusBannerTimer = 3.6;
+  events.rebirthCompleted = true;
+}
+
+function throwBottleOrCan(sim: SimulationState, events: StepEvents): void {
+  const { player } = sim;
+  if (player.hidingSpotId || player.bottlesCount <= 0) return;
+
+  player.bottlesCount -= 1;
+  const fwdX = -Math.sin(player.yaw);
+  const fwdZ = -Math.cos(player.yaw);
+  const cosPitch = Math.cos(player.pitch);
+  const sinPitch = Math.sin(player.pitch);
+
+  const eyeY = player.y + (player.isUnderTable ? 0.58 : player.crouching ? 0.96 : 1.52);
+  const speedHoriz = Math.max(3.5, cosPitch * 11.5);
+
+  sim.projectiles.push({
+    id: sim.nextProjectileId++,
+    kind: player.bottlesCount % 2 === 0 ? 'bottle' : 'can',
+    x: player.x + fwdX * 0.45,
+    y: eyeY - 0.08,
+    z: player.z + fwdZ * 0.45,
+    vx: fwdX * speedHoriz,
+    vy: 2.8 + sinPitch * 6.5,
+    vz: fwdZ * speedHoriz,
+    floor: getFloorIndexFromY(player.y),
+  });
+  events.bottleThrown = true;
+}
+
+function stepProjectiles(sim: SimulationState, dt: number, events: StepEvents): void {
+  if (sim.projectiles.length === 0) return;
+  const remaining: ThrownProjectile[] = [];
+
+  for (const proj of sim.projectiles) {
+    const nextX = proj.x + proj.vx * dt;
+    const nextZ = proj.z + proj.vz * dt;
+    proj.vy -= 15.0 * dt;
+    const nextY = proj.y + proj.vy * dt;
+
+    const floorY = proj.floor === 1 ? FLOOR2_Y : 0;
+    const cell = worldToGrid(nextX, nextZ);
+    const hitWall = isWallCell(cell.col, cell.row, proj.floor, sim.shifts.gridOverrides);
+    const hitDoor = sim.doors.some((d) => {
+      if (d.floor !== proj.floor || !isDoorSolid(d)) return false;
+      const box = getDoorBox(d);
+      return nextX >= box.minX && nextX <= box.maxX && nextZ >= box.minZ && nextZ <= box.maxZ;
+    });
+
+    if (nextY <= floorY + 0.08 || hitWall || hitDoor) {
+      const impactX = hitWall || hitDoor ? proj.x : nextX;
+      const impactZ = hitWall || hitDoor ? proj.z : nextZ;
+      events.bottleShattered = {
+        x: impactX,
+        y: floorY,
+        z: impactZ,
+        floor: proj.floor,
+      };
+      sim.statusBanner = 'Glass Shattered! The Resident is drawn to the noise!';
+      sim.statusBannerTimer = 2.4;
+
+      // Divert Resident within 34m toward the shatter site unless actively staring at player
+      const distToThreat = Math.hypot(impactX - sim.threat.x, impactZ - sim.threat.z);
+      if (distToThreat <= 34.0) {
+        sim.threat.mode = 'investigate';
+        sim.threat.targetX = impactX;
+        sim.threat.targetY = floorY;
+        sim.threat.targetZ = impactZ;
+        sim.threat.searchTimer = 6.0;
+        sim.threat.alertFlash = 0.9;
+        sim.threat.sawPlayerHideId = null;
+        sim.threat.sawUnderTableId = null;
+        events.threatSniff = true;
+      }
+    } else {
+      proj.x = nextX;
+      proj.y = nextY;
+      proj.z = nextZ;
+      remaining.push(proj);
+    }
+  }
+
+  sim.projectiles = remaining;
+}
+
+function stepThreatAI(
+  sim: SimulationState,
+  dt: number,
+  events: StepEvents,
+  speedMult: number
+): void {
   const { threat, player, doors, shifts } = sim;
 
   if (threat.hitCooldown > 0) threat.hitCooldown = Math.max(0, threat.hitCooldown - dt);
@@ -1212,7 +1596,7 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
   if (sim.lockerCheckCooldown > 0) sim.lockerCheckCooldown = Math.max(0, sim.lockerCheckCooldown - dt);
 
   const distToPlayer = Math.hypot(player.x - threat.x, player.z - threat.z);
-  const playerVisible =
+  const rawLos =
     !player.hidingSpotId &&
     player.invulnTimer <= 0 &&
     distToPlayer <= THREAT_SIGHT_RANGE &&
@@ -1226,6 +1610,23 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
       doors,
       shifts.gridOverrides
     );
+
+  // Under-table stealth check:
+  // If player is under a table, Resident IGNORES them unless she is in active Chase AND saw them go under it!
+  if (player.isUnderTable && threat.mode === 'chase' && rawLos && !threat.sawUnderTableId) {
+    // Only mark sawUnderTableId if Resident already had Chase sight within 9m
+    if (distToPlayer < 9.5) {
+      threat.sawUnderTableId = player.underTableId;
+    }
+  }
+  if (!player.isUnderTable && threat.mode !== 'chase') {
+    threat.sawUnderTableId = null;
+  }
+
+  const concealedUnderTable =
+    player.isUnderTable && !(threat.mode === 'chase' && threat.sawUnderTableId === player.underTableId);
+
+  const playerVisible = rawLos && !concealedUnderTable;
 
   const hearingRadius = player.noiseLevel > 0.72 ? 20.0 : player.noiseLevel > 0.4 ? 11.0 : 0;
 
@@ -1244,6 +1645,7 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
     hearingRadius > 0 &&
     distToPlayer <= hearingRadius &&
     !player.hidingSpotId &&
+    !concealedUnderTable &&
     threat.mode !== 'chase' &&
     threat.mode !== 'smash_door'
   ) {
@@ -1289,7 +1691,7 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
     threat.sawPlayerHideId = null;
   }
 
-  // Handle 'smash_door' 2-second pause when Resident hits a closed door
+  // Handle 'smash_door' 2-second pause
   if (threat.mode === 'smash_door') {
     const door = doors.find((d) => d.id === threat.smashingDoorId);
     if (!door || door.state === 'open') {
@@ -1324,7 +1726,7 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
     return;
   }
 
-  // Handle 4.0-second 'inspect_room' idle state upon entering major rooms!
+  // Handle 4.0-second 'inspect_room' idle state
   if (threat.mode === 'inspect_room') {
     threat.roomInspectTimer -= dt;
     threat.headTilt = Math.sin(threat.roomInspectTimer * 1.9) * 0.42;
@@ -1335,7 +1737,7 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
     return;
   }
 
-  // Handle 'check_locker' listen pause outside hiding spot
+  // Handle 'check_locker' listen pause
   if (threat.mode === 'check_locker') {
     threat.searchTimer -= dt;
     threat.headTilt = -0.45;
@@ -1351,10 +1753,11 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
     return;
   }
 
-  let speed = THREAT_PATROL_SPEED;
-  if (threat.mode === 'chase') speed = THREAT_CHASE_SPEED;
-  else if (threat.mode === 'investigate') speed = THREAT_INVESTIGATE_SPEED;
-  else if (threat.mode === 'search') speed = THREAT_PATROL_SPEED * 0.92;
+  let baseSpeed = THREAT_PATROL_SPEED;
+  if (threat.mode === 'chase') baseSpeed = THREAT_CHASE_SPEED;
+  else if (threat.mode === 'investigate') baseSpeed = THREAT_INVESTIGATE_SPEED;
+  else if (threat.mode === 'search') baseSpeed = THREAT_PATROL_SPEED * 0.92;
+  const speed = baseSpeed * speedMult;
 
   const nextStep = findNextGridStep(
     threat.x,
@@ -1399,6 +1802,7 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
     const vx = (toX / stepDist) * moveDist;
     const vz = (toZ / stepDist) * moveDist;
 
+    // IncludeFurniture = true & allowUnderTables = false -> ZERO prop/table clipping!
     const resolved = resolveCircleMovement(
       threat.x,
       threat.y,
@@ -1407,8 +1811,9 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
       vz,
       THREAT_RADIUS,
       doors,
-      false,
-      shifts.gridOverrides
+      true,
+      shifts.gridOverrides,
+      false
     );
     const moved = Math.hypot(resolved.x - threat.x, resolved.z - threat.z);
     threat.x = resolved.x;
@@ -1483,9 +1888,10 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
     }
   }
 
-  // Catch check
+  // Catch check (respects under-table stealth!)
   if (
     !player.hidingSpotId &&
+    !concealedUnderTable &&
     player.invulnTimer <= 0 &&
     threat.hitCooldown <= 0 &&
     Math.abs(player.y - threat.y) < 1.6 &&
@@ -1508,20 +1914,19 @@ function stepThreatAI(sim: SimulationState, dt: number, events: StepEvents): voi
         : zone === 'library_f1' || zone === 'library_mezzanine'
           ? 'Break line of sight behind tall Library bookshelves or climb to the Mezzanine.'
           : zone === 'kitchen'
-            ? 'Circle the Kitchen counter or shut a door behind you to slow her down.'
-            : 'Slip into a wardrobe, locker, or under a cabin bed before she spots you.';
+            ? 'Circle the Kitchen counter or crouch under a cloth table.'
+            : 'Slip into a wardrobe, crouch under a table, or throw a bottle to divert her.';
     triggerPlayerStrike(sim, events, zoneHint);
   }
 }
 
-function stepArchitectureShifts(sim: SimulationState, events: StepEvents): void {
+function stepArchitectureShifts(sim: SimulationState, dt: number, events: StepEvents): void {
   const { player, shifts } = sim;
 
   // Scenario 1: Disappearing Door in Floor 2 Cabin 3
   if (shifts.cabin3PickupTaken && !shifts.cabin3Sealed && player.y >= FLOOR2_Y * 0.5) {
     const pCol = player.x / TILE_SIZE;
     const pRow = player.z / TILE_SIZE;
-    // Check player is inside Cabin 3 (cols 18..22, rows 2..6)
     if (pCol >= 18.05 && pCol <= 22.0 && pRow >= 2.0 && pRow <= 5.95) {
       const doorX = 17.5 * TILE_SIZE;
       const doorZ = 4.5 * TILE_SIZE;
@@ -1532,7 +1937,6 @@ function stepArchitectureShifts(sim: SimulationState, events: StepEvents): void 
       const fwdZ = -Math.cos(player.yaw);
       const dot = (fwdX * toDoorX + fwdZ * toDoorZ) / dLen;
 
-      // Turned away > 120 degrees (cos(120 deg) = -0.5)
       if (dot < -0.5) {
         shifts.cabin3Sealed = true;
         shifts.cabin3SecretOpen = true;
@@ -1545,7 +1949,7 @@ function stepArchitectureShifts(sim: SimulationState, events: StepEvents): void 
     }
   }
 
-  // Scenario 2: Endless Corridor Loop (Floor 2 Row 1, cols 3..10) after >= 1 item found
+  // Scenario 2: Endless Corridor Loop + Ringing Rotary Phone (replaces Red Door)
   if (sim.itemsFound >= 1 && !shifts.endlessLoopSolved && player.y >= FLOOR2_Y * 0.5) {
     const inCorridor =
       player.x >= ENDLESS_CORRIDOR_BOUNDS.minX &&
@@ -1556,17 +1960,175 @@ function stepArchitectureShifts(sim: SimulationState, events: StepEvents): void 
     if (inCorridor) {
       if (!shifts.endlessLoopActive) {
         shifts.endlessLoopActive = true;
-        shifts.redDoorAppeared = true;
-        sim.statusBanner = 'The hallway stretches endlessly... What shifted behind you?';
-        sim.statusBannerTimer = 3.2;
+        shifts.phoneSpawned = true;
+        shifts.gridOverrides[
+          gridOverrideKey(
+            ENDLESS_CORRIDOR_BOUNDS.floor,
+            ENDLESS_CORRIDOR_BOUNDS.shiftingWallGridX,
+            ENDLESS_CORRIDOR_BOUNDS.shiftingWallGridZ
+          )
+        ] = '#';
+        const triggerPhone = sim.phones.find((p) => p.id === 'phone_endless_corridor');
+        if (triggerPhone) {
+          triggerPhone.ringing = true;
+          events.phoneRinging = true;
+        }
+        sim.statusBanner = 'The corridor seals shut — a rotary telephone begins to ring...';
+        sim.statusBannerTimer = 3.4;
       }
 
       if (player.x < ENDLESS_CORRIDOR_BOUNDS.loopThresholdX) {
         player.x += ENDLESS_CORRIDOR_BOUNDS.loopResetDeltaX;
         events.architectureShift = 'endless_loop';
-        sim.statusBanner = 'The corridor loops again! Turn around toward the Red Door!';
+        sim.statusBanner = 'The corridor loops again! Answer the ringing Rotary Phone!';
         sim.statusBannerTimer = 3.0;
       }
+    }
+  }
+
+  // Dream-Logic Door Shift: Lingering in a closed room > 10s quietly flips an adjacent wing divider
+  if (shifts.dreamLastDoorId && shifts.dreamShiftCount < 4) {
+    const lastDoor = sim.doors.find((d) => d.id === shifts.dreamLastDoorId);
+    if (lastDoor && lastDoor.state === 'closed') {
+      shifts.dreamRoomTimer += dt;
+      if (shifts.dreamRoomTimer >= 10.0) {
+        shifts.dreamRoomTimer = 0;
+        shifts.dreamShiftCount += 1;
+        const shiftTargets: Array<[FloorIndex, number, number]> = [
+          [0, 10, 2],
+          [0, 14, 2],
+          [1, 13, 2],
+          [1, 9, 20],
+        ];
+        const [fl, sc, sr] = shiftTargets[(shifts.dreamShiftCount - 1) % shiftTargets.length];
+        const k = gridOverrideKey(fl, sc, sr);
+        shifts.gridOverrides[k] = shifts.gridOverrides[k] === '#' ? '.' : '#';
+        events.architectureShift = 'dream_shift';
+      }
+    } else {
+      shifts.dreamRoomTimer = 0;
+    }
+  }
+}
+
+function stepParanoiaAndPhones(
+  sim: SimulationState,
+  input: InputSample,
+  dt: number,
+  events: StepEvents
+): void {
+  const { player, threat, paranoia, phones } = sim;
+
+  if (paranoia.radioWhisperCooldown > 0) {
+    paranoia.radioWhisperCooldown = Math.max(0, paranoia.radioWhisperCooldown - dt);
+  }
+  if (paranoia.radioMessageTimer > 0) {
+    paranoia.radioMessageTimer = Math.max(0, paranoia.radioMessageTimer - dt);
+    if (paranoia.radioMessageTimer <= 0) paranoia.radioMessage = null;
+  }
+  if (paranoia.ghostFootstepsCooldown > 0) {
+    paranoia.ghostFootstepsCooldown = Math.max(0, paranoia.ghostFootstepsCooldown - dt);
+  }
+  if (paranoia.ghostEyeFlashTimer > 0) {
+    paranoia.ghostEyeFlashTimer = Math.max(0, paranoia.ghostEyeFlashTimer - dt);
+  }
+  if (paranoia.mirrorHauntTimer > 0) {
+    paranoia.mirrorHauntTimer = Math.max(0, paranoia.mirrorHauntTimer - dt);
+    if (paranoia.mirrorHauntTimer <= 0) paranoia.mirrorHauntedId = null;
+  }
+
+  // Smoothly lag mirror reflection yaw by ~0.38s
+  let yawDiff = player.yaw - paranoia.mirrorLagYaw;
+  while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+  while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+  paranoia.mirrorLagYaw += yawDiff * Math.min(1, dt * 3.2);
+
+  // 1. Pocket Radio through-wall warnings when Threat <= 10m out of line-of-sight
+  const dist3d = Math.hypot(
+    player.x - threat.x,
+    (player.y - threat.y) * 1.4,
+    player.z - threat.z
+  );
+  if (dist3d <= 10.0 && paranoia.radioWhisperCooldown <= 0) {
+    const los = hasLineOfSight(
+      threat.x,
+      threat.y,
+      threat.z,
+      player.x,
+      player.y,
+      player.z,
+      sim.doors,
+      sim.shifts.gridOverrides
+    );
+    if (!los) {
+      const lines = [
+        '"...she is right behind that wall..."',
+        '"...don\'t turn around..."',
+        '"...crouch under a table, now..."',
+        '"...take the stairs before she crosses..."',
+      ];
+      const msg = lines[(sim.loopCount + Math.floor(sim.elapsedSeconds)) % lines.length];
+      paranoia.radioMessage = msg;
+      paranoia.radioMessageTimer = 3.2;
+      paranoia.radioWhisperCooldown = 12.0;
+      events.radioWhisper = true;
+    }
+  }
+
+  // 2. Auditory Paranoia: walking/running > 6s without looking back triggers footsteps 2.5m behind!
+  const moveMag = Math.hypot(input.moveForward, input.moveRight);
+  if (moveMag > 0.2 && !player.hidingSpotId && Math.abs(input.yawDelta) < 0.015) {
+    paranoia.noTurnTimer += dt;
+    if (paranoia.noTurnTimer >= 6.0 && paranoia.ghostFootstepsCooldown <= 0) {
+      paranoia.noTurnTimer = 0;
+      paranoia.ghostFootstepsActive = true;
+      paranoia.ghostFootstepsCooldown = 28.0;
+      events.ghostFootstepsBehind = true;
+      if (!sim.statusBanner) {
+        sim.statusBanner = 'Heavy footsteps sprint close behind your neck...';
+        sim.statusBannerTimer = 2.2;
+      }
+    }
+  } else if (Math.abs(input.yawDelta) > 0.04) {
+    paranoia.noTurnTimer = 0;
+    if (paranoia.ghostFootstepsActive) {
+      // Spinning around abruptly cuts footsteps & flashes phantom red eyes down the hall!
+      paranoia.ghostFootstepsActive = false;
+      const fwdX = -Math.sin(player.yaw);
+      const fwdZ = -Math.cos(player.yaw);
+      paranoia.ghostEyeX = player.x + fwdX * 8.5;
+      paranoia.ghostEyeY = player.y + 1.85;
+      paranoia.ghostEyeZ = player.z + fwdZ * 8.5;
+      paranoia.ghostEyeFlashTimer = 0.55;
+      events.ghostEyeFlash = true;
+    }
+  }
+
+  // 3. Haunted Mirror inspection (~20% chance when staring into nearby wall mirror)
+  const activeFloor = getFloorIndexFromY(player.y);
+  for (const mirror of HAUNTED_MIRRORS) {
+    if (mirror.floor !== activeFloor) continue;
+    const mDist = Math.hypot(mirror.x - player.x, mirror.z - player.z);
+    if (mDist < 2.4 && paranoia.mirrorHauntTimer <= 0) {
+      const roll = Math.floor((sim.elapsedSeconds * 37 + mirror.id.length * 13) % 100);
+      if (roll < 20 && paranoia.ghostFootstepsCooldown < 24) {
+        paranoia.mirrorHauntTimer = 0.65;
+        paranoia.mirrorHauntedId = mirror.id;
+        paranoia.ghostFootstepsCooldown = 26;
+        events.mirrorHaunted = true;
+      }
+    }
+  }
+
+  // 4. Ambient Rotary Phones ringing occasionally
+  paranoia.phoneRingCooldown -= dt;
+  if (paranoia.phoneRingCooldown <= 0) {
+    paranoia.phoneRingCooldown = 28.0;
+    const ambientPhones = phones.filter((p) => !p.isLoopTrigger && !p.ringing);
+    if (ambientPhones.length > 0) {
+      const picked = ambientPhones[Math.floor(sim.elapsedSeconds) % ambientPhones.length];
+      picked.ringing = true;
+      events.phoneRinging = true;
     }
   }
 }
@@ -1574,9 +2136,12 @@ function stepArchitectureShifts(sim: SimulationState, events: StepEvents): void 
 export function stepSimulation(
   sim: SimulationState,
   input: InputSample,
-  rawDt: number
+  rawDt: number,
+  settings: GameSettings = DEFAULT_SETTINGS
 ): StepEvents {
   const dt = Math.min(rawDt, 0.05);
+  sim.glassesCooldownMax = settings.glassesCooldownSec;
+
   const events: StepEvents = {
     footstepPlayer: false,
     footstepThreat: false,
@@ -1584,6 +2149,16 @@ export function stepSimulation(
     propKnocked: null,
     pickup: null,
     shardPickup: false,
+    throwablePickup: false,
+    bottleThrown: false,
+    bottleShattered: null,
+    loreInspected: false,
+    phoneRinging: false,
+    phoneAnswered: false,
+    radioWhisper: false,
+    ghostFootstepsBehind: false,
+    ghostEyeFlash: false,
+    mirrorHaunted: false,
     glassesToggled: false,
     midnightQuake: false,
     architectureShift: null,
@@ -1599,6 +2174,8 @@ export function stepSimulation(
     threatAlerted: false,
     playerHit: false,
     jumpscareStarted: false,
+    rebirthStarted: false,
+    rebirthCompleted: false,
     escaped: false,
     defeated: false,
     echoInspected: false,
@@ -1607,13 +2184,22 @@ export function stepSimulation(
 
   if (sim.phase === 'jumpscare') {
     sim.jumpscareTimer -= dt;
-    sim.jumpscareProgress = clamp(1 - sim.jumpscareTimer / 1.15, 0, 1);
+    sim.jumpscareProgress = clamp(1 - sim.jumpscareTimer / JUMPSCARE_DURATION, 0, 1);
     if (sim.jumpscareTimer <= 0) {
-      sim.phase = 'gameover';
-      sim.victory = false;
-      sim.statusBanner = 'Consumed by the Loop';
-      sim.statusBannerTimer = 4.0;
+      sim.phase = 'rebirth';
+      sim.rebirthTimer = REBIRTH_DURATION;
+      sim.rebirthProgress = 0;
+      events.rebirthStarted = true;
       events.defeated = true;
+    }
+    return events;
+  }
+
+  if (sim.phase === 'rebirth') {
+    sim.rebirthTimer -= dt;
+    sim.rebirthProgress = clamp(1 - sim.rebirthTimer / REBIRTH_DURATION, 0, 1);
+    if (sim.rebirthTimer <= 0) {
+      rebirthFromLoop(sim, events);
     }
     return events;
   }
@@ -1630,13 +2216,37 @@ export function stepSimulation(
     sim.echoNoteTimer -= dt;
     if (sim.echoNoteTimer <= 0) sim.echoNoteText = null;
   }
+  if (sim.loreOverlayTimer > 0) {
+    sim.loreOverlayTimer -= dt;
+    if (sim.loreOverlayTimer <= 0) sim.loreOverlay = null;
+  }
+
+  // Flashlight toggle + battery drain / trickle recharge
+  if (input.flashlightToggle) {
+    if (sim.player.flashlightOn) {
+      sim.player.flashlightOn = false;
+    } else if (sim.player.battery > 1) {
+      sim.player.flashlightOn = true;
+    }
+  }
+  const batterySec = Math.max(20, settings.flashlightBatterySec);
+  if (sim.player.flashlightOn) {
+    sim.player.battery = Math.max(0, sim.player.battery - (100 / batterySec) * dt);
+    if (sim.player.battery <= 0) {
+      sim.player.flashlightOn = false;
+      sim.statusBanner = 'Flashlight battery depleted — recharging slowly...';
+      sim.statusBannerTimer = 2.4;
+    }
+  } else {
+    sim.player.battery = Math.min(100, sim.player.battery + (100 / (batterySec * 1.4)) * dt);
+  }
 
   // Spectral Glasses Timers & Toggle
   if (sim.glasses.active) {
     sim.glasses.activeTimer = Math.max(0, sim.glasses.activeTimer - dt);
     if (sim.glasses.activeTimer <= 0) {
       sim.glasses.active = false;
-      sim.glasses.cooldownTimer = GLASSES_COOLDOWN_DURATION;
+      sim.glasses.cooldownTimer = settings.glassesCooldownSec;
       events.glassesToggled = true;
     }
   } else if (sim.glasses.cooldownTimer > 0) {
@@ -1646,7 +2256,7 @@ export function stepSimulation(
   if (input.glassesToggle) {
     if (sim.glasses.active) {
       sim.glasses.active = false;
-      sim.glasses.cooldownTimer = GLASSES_COOLDOWN_DURATION;
+      sim.glasses.cooldownTimer = settings.glassesCooldownSec;
       events.glassesToggled = true;
     } else if (sim.glasses.cooldownTimer <= 0) {
       sim.glasses.active = true;
@@ -1722,13 +2332,15 @@ export function stepSimulation(
   player.pitch = clamp(player.pitch + input.pitchDelta, -1.3, 1.3);
 
   if (input.crouchToggle && !player.hidingSpotId) {
-    player.crouching = !player.crouching;
+    if (player.crouching && player.isUnderTable) {
+      sim.statusBanner = 'Too low to stand under the table';
+      sim.statusBannerTimer = 1.6;
+    } else {
+      player.crouching = !player.crouching;
+    }
   }
 
   player.noiseLevel = Math.max(0, player.noiseLevel - dt * 1.35);
-
-  const redDoorBlocking =
-    shifts.endlessLoopActive && shifts.redDoorAppeared && !shifts.endlessLoopSolved;
 
   if (!player.hidingSpotId) {
     const moveLen = Math.hypot(input.moveForward, input.moveRight);
@@ -1784,7 +2396,7 @@ export function stepSimulation(
         sim.doors,
         true,
         shifts.gridOverrides,
-        redDoorBlocking
+        player.crouching
       );
 
       const moved = Math.hypot(resolved.x - player.x, resolved.z - player.z);
@@ -1836,12 +2448,34 @@ export function stepSimulation(
         events.footstepPlayer = true;
       }
     }
+
+    // Update Under-Table stealth state when crouching beneath any HideTable
+    const activeFloor = getFloorIndexFromY(player.y);
+    let underTbl: string | null = null;
+    if (player.crouching) {
+      for (const tbl of HIDE_TABLES) {
+        if (
+          tbl.floor === activeFloor &&
+          player.x >= tbl.minX &&
+          player.x <= tbl.maxX &&
+          player.z >= tbl.minZ &&
+          player.z <= tbl.maxZ
+        ) {
+          underTbl = tbl.id;
+          break;
+        }
+      }
+    }
+    player.isUnderTable = underTbl !== null;
+    player.underTableId = underTbl;
   } else {
     player.sprinting = false;
+    player.isUnderTable = false;
+    player.underTableId = null;
     player.stamina = Math.min(100, player.stamina + dt * 22);
   }
 
-  // Scalding Steam Hazard knockback if trying to rush past unshut valve on Floor 1
+  // Scalding Steam Hazard knockback
   if (!sim.steamShutOff && player.y < 1.5) {
     const sdx = player.x - STEAM_VALVE_POS.x;
     const sdz = player.z - (STEAM_VALVE_POS.z - 1.2);
@@ -1857,7 +2491,8 @@ export function stepSimulation(
         PLAYER_RADIUS,
         sim.doors,
         true,
-        shifts.gridOverrides
+        shifts.gridOverrides,
+        player.crouching
       );
       player.x = pushed.x;
       player.y = pushed.y;
@@ -1868,11 +2503,22 @@ export function stepSimulation(
   }
 
   if (input.interactPressed) {
-    performInteraction(sim, events);
+    if (sim.loreOverlay) {
+      sim.loreOverlay = null;
+      sim.loreOverlayTimer = 0;
+    } else {
+      performInteraction(sim, events);
+    }
   }
 
-  stepArchitectureShifts(sim, events);
-  stepThreatAI(sim, dt, events);
+  if (input.throwPressed) {
+    throwBottleOrCan(sim, events);
+  }
+
+  stepProjectiles(sim, dt, events);
+  stepArchitectureShifts(sim, dt, events);
+  stepParanoiaAndPhones(sim, input, dt, events);
+  stepThreatAI(sim, dt, events, settings.monsterSpeedMult);
 
   return events;
 }
@@ -1892,10 +2538,14 @@ export function buildHudSnapshot(sim: SimulationState): GameHudSnapshot {
         : 0;
   const dangerLevel = clamp(proximityDanger + chaseBoost, 0, 1);
 
+  const radioStaticLevel =
+    dist3d <= 25.0 ? clamp((1 - dist3d / 25.0) * (sim.threat.mode === 'chase' ? 1.0 : 0.85), 0, 1) : 0;
+
   const interaction = sim.phase === 'playing' ? findBestInteraction(sim) : null;
   const hideSpot = sim.player.hidingSpotId
     ? HIDE_SPOTS.find((h) => h.id === sim.player.hidingSpotId) ?? null
     : null;
+  const loreFound = sim.lore.filter((l) => l.inspected).length;
 
   return {
     phase: sim.phase,
@@ -1903,35 +2553,46 @@ export function buildHudSnapshot(sim: SimulationState): GameHudSnapshot {
     loopCount: sim.loopCount,
     elapsedSeconds: sim.elapsedSeconds,
     strikesRemaining: sim.player.strikesRemaining,
-    maxStrikes: 3,
+    maxStrikes: 1,
     stamina: Math.round(sim.player.stamina),
     crouching: sim.player.crouching,
-    hiding: sim.player.hidingSpotId !== null,
-    hidingKind: hideSpot ? hideSpot.kind : null,
+    isUnderTable: sim.player.isUnderTable,
+    hiding: sim.player.hidingSpotId !== null || sim.player.isUnderTable,
+    hidingKind: sim.player.isUnderTable ? 'table' : hideSpot ? hideSpot.kind : null,
     currentFloor: getFloorIndexFromY(sim.player.y) === 1 ? 2 : 1,
     steamShutOff: sim.steamShutOff,
     powerRestored: sim.powerRestored,
     inventory: [...sim.inventory],
     selectedSlot: sim.selectedSlot,
+    bottlesCount: sim.player.bottlesCount,
+    flashlightOn: sim.player.flashlightOn,
+    battery: Math.round(sim.player.battery),
     currentZone: getZoneAt(sim.player.x, sim.player.y, sim.player.z),
     objectiveText: computeObjectiveText(sim),
     promptText: interaction ? interaction.label : null,
     promptActionable: interaction ? interaction.actionable : false,
     dangerLevel,
+    radioStaticLevel,
+    radioMessage: sim.paranoia.radioMessage,
     threatMode: sim.threat.mode,
     roomsUnlocked: sim.roomsUnlocked,
     itemsFound: sim.itemsFound,
+    loreFound,
+    loreTotal: sim.lore.length,
     damageFlash: sim.damageFlash,
     statusBanner: sim.statusBanner,
     echoNoteText: sim.echoNoteText,
+    loreOverlay: sim.loreOverlay,
     jumpscareProgress: sim.jumpscareProgress,
+    rebirthProgress: sim.rebirthProgress,
     glassesActive: sim.glasses.active,
     glassesTimeLeft: Number(sim.glasses.activeTimer.toFixed(1)),
     glassesCooldownLeft: Number(sim.glasses.cooldownTimer.toFixed(1)),
-    glassesCooldownMax: GLASSES_COOLDOWN_DURATION,
+    glassesCooldownMax: sim.glassesCooldownMax,
     glassShardsCollected: sim.glasses.shardsCollected,
     quakeTriggered: sim.shifts.midnightQuakeTriggered,
     endlessLoopActive: sim.shifts.endlessLoopActive && !sim.shifts.endlessLoopSolved,
     cabin3Sealed: sim.shifts.cabin3Sealed,
+    phoneRinging: sim.phones.some((p) => p.ringing),
   };
 }

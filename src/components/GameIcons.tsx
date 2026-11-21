@@ -132,15 +132,31 @@ export const PauseIconSvg: React.FC<{ className?: string }> = ({ className = 'w-
   </svg>
 );
 
-export const RestartIconSvg: React.FC<{ className?: string }> = ({ className = 'w-5 h-5' }) => (
+export const BottleIconSvg: React.FC<{ className?: string }> = ({ className = 'w-4 h-4' }) => (
   <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
     <path
-      d="M5.5 11.5C5.8 7.8 8.8 5 12.5 5C16.4 5 19.5 8.1 19.5 12C19.5 15.9 16.4 19 12.5 19C10 19 7.8 17.7 6.5 15.7"
-      stroke="#c9d6cc"
-      strokeWidth="2"
-      strokeLinecap="round"
+      d="M10 3H14V6.5L16.5 9.5V20C16.5 20.8 15.8 21.5 15 21.5H9C8.2 21.5 7.5 20.8 7.5 20V9.5L10 6.5V3Z"
+      fill="#497d5b"
+      stroke="#bde8c8"
+      strokeWidth="1.6"
+      strokeLinejoin="round"
     />
-    <path d="M4 7.5L5.5 12L9.8 10.5" stroke="#c9d6cc" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+export const FlashlightIconSvg: React.FC<{ on: boolean; className?: string }> = ({
+  on,
+  className = 'w-4 h-4',
+}) => (
+  <svg viewBox="0 0 24 24" fill="none" className={className} aria-hidden="true">
+    <path
+      d="M6 8H13L17 5V19L13 16H6V8Z"
+      fill={on ? '#e4d599' : '#2f3c33'}
+      stroke={on ? '#fff3c4' : '#748a7a'}
+      strokeWidth="1.6"
+      strokeLinejoin="round"
+    />
+    {on && <path d="M19.5 9L22 8M19.5 12H22.5M19.5 15L22 16" stroke="#fff3c4" strokeWidth="1.6" strokeLinecap="round" />}
   </svg>
 );
 

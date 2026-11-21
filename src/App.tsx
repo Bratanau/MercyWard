@@ -6,8 +6,10 @@ import {
   HospitalViewport,
   MobileControlState,
 } from './components/HospitalViewport';
+import { SettingsModal } from './components/SettingsModal';
 import { TitleScreen } from './components/TitleScreen';
 import { buildHudSnapshot, createInitialSimulation } from './game/rules';
+import { GameSettings, loadSettings, saveSettings } from './game/settings';
 import { GameHudSnapshot } from './game/types';
 
 export default function App() {
@@ -20,6 +22,8 @@ export default function App() {
     buildHudSnapshot(createInitialSimulation(autostart))
   );
   const [muted, setMuted] = useState(false);
+  const [settings, setSettings] = useState<GameSettings>(() => loadSettings());
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const controllerRef = useRef<HospitalController | null>(null);
   const mobileInputRef = useRef<MobileControlState>({
@@ -28,23 +32,28 @@ export default function App() {
     sprint: false,
   });
 
+  const handleSettingsChange = useCallback((next: GameSettings) => {
+    const clean = saveSettings(next);
+    setSettings(clean);
+  }, []);
+
   const handleStart = useCallback(() => {
-    controllerRef.current?.startNewRun(false, false);
+    setSettingsOpen(false);
+    controllerRef.current?.startNewRun(false, true);
   }, []);
 
   const handleNextLoopOrReset = useCallback(() => {
-    if (hud.phase === 'gameover' && !hud.victory) {
-      controllerRef.current?.startNewRun(true, false);
-    } else {
-      controllerRef.current?.startNewRun(false, true);
-    }
-  }, [hud.phase, hud.victory]);
+    setSettingsOpen(false);
+    controllerRef.current?.startNewRun(false, true);
+  }, []);
 
   const handleResetTimeline = useCallback(() => {
+    setSettingsOpen(false);
     controllerRef.current?.startNewRun(false, true);
   }, []);
 
   const handleResume = useCallback(() => {
+    setSettingsOpen(false);
     controllerRef.current?.setPhase('playing');
   }, []);
 
@@ -53,6 +62,7 @@ export default function App() {
   }, []);
 
   const handleTitle = useCallback(() => {
+    setSettingsOpen(false);
     controllerRef.current?.setPhase('title');
   }, []);
 
@@ -72,6 +82,18 @@ export default function App() {
     controllerRef.current?.triggerGlasses();
   }, []);
 
+  const handleThrow = useCallback(() => {
+    controllerRef.current?.triggerThrow();
+  }, []);
+
+  const handleFlashlight = useCallback(() => {
+    controllerRef.current?.triggerFlashlight();
+  }, []);
+
+  const handleDismissLore = useCallback(() => {
+    controllerRef.current?.dismissLore();
+  }, []);
+
   const handleSelectSlot = useCallback((idx: number) => {
     controllerRef.current?.selectSlot(idx);
   }, []);
@@ -80,13 +102,19 @@ export default function App() {
     <main className="relative w-full h-full overflow-hidden bg-[#040705]">
       <HospitalViewport
         autostart={autostart}
+        settings={settings}
         mobileInputRef={mobileInputRef}
         controllerRef={controllerRef}
         onHudUpdate={setHud}
         onMuteChange={setMuted}
       />
 
-      {hud.phase === 'title' && <TitleScreen onStart={handleStart} />}
+      {hud.phase === 'title' && !settingsOpen && (
+        <TitleScreen
+          onStart={handleStart}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
+      )}
 
       {hud.phase === 'playing' && (
         <GameHud
@@ -95,30 +123,60 @@ export default function App() {
           mobileInputRef={mobileInputRef}
           onToggleMute={handleToggleMute}
           onPause={handlePause}
-          onRestart={handleStart}
           onInteract={handleInteract}
           onCrouch={handleCrouch}
           onGlasses={handleGlasses}
+          onThrow={handleThrow}
+          onFlashlight={handleFlashlight}
+          onDismissLore={handleDismissLore}
           onSelectSlot={handleSelectSlot}
         />
       )}
 
+      {/* 1-Hit Lethal Devour Jumpscare Crimson Vignette */}
       {hud.phase === 'jumpscare' && (
         <div
           className="fixed inset-0 z-20 pointer-events-none"
           style={{
             background:
-              'radial-gradient(circle at 50% 46%, rgba(160, 12, 12, 0.14) 24%, rgba(120, 8, 8, 0.72) 100%)',
+              'radial-gradient(circle at 50% 46%, rgba(165, 10, 10, 0.16) 22%, rgba(120, 4, 4, 0.85) 100%)',
           }}
         />
       )}
 
-      {hud.phase === 'paused' && (
+      {/* Seamless 1.5s Triangle Rebirth Blackout */}
+      {hud.phase === 'rebirth' && (
+        <div
+          data-testid="rebirth-blackout"
+          className="fixed inset-0 z-30 flex flex-col items-center justify-center bg-[#020303] text-center px-6 pointer-events-none"
+        >
+          <p className="text-xs uppercase tracking-[0.28em] text-[#8f9c92]">
+            Cycle #{hud.loopCount + 1} Begins
+          </p>
+          <p className="mt-2 font-display text-2xl sm:text-3xl text-[#e2ebe3]">
+            You wake up gasping...
+          </p>
+          <p className="mt-2 text-xs sm:text-sm text-[#768779]">
+            Everything you carried remains in your hands.
+          </p>
+        </div>
+      )}
+
+      {hud.phase === 'paused' && !settingsOpen && (
         <PauseModal
           loopCount={hud.loopCount}
           onResume={handleResume}
+          onOpenSettings={() => setSettingsOpen(true)}
           onRestart={handleStart}
           onTitle={handleTitle}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsModal
+          settings={settings}
+          onChange={handleSettingsChange}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
 

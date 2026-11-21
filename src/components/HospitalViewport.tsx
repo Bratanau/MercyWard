@@ -4,17 +4,21 @@ import { HorrorAudioEngine } from '../game/audio';
 import {
   BREAKER_BOX_POS,
   CREAKY_FLOORS,
-  ENDLESS_CORRIDOR_BOUNDS,
   FLOOR1_GRID,
   FLOOR2_GRID,
   FLOOR2_Y,
   FLOOR_HEIGHT,
   GRID_COLS,
   GRID_ROWS,
+  HAUNTED_MIRRORS,
   HIDE_SPOTS,
+  HIDE_TABLES,
   INITIAL_DOORS,
   INITIAL_GLASS_SHARDS,
   INITIAL_KNOCKABLES,
+  INITIAL_LORE_ITEMS,
+  INITIAL_ROTARY_PHONES,
+  INITIAL_THROWABLES,
   isBallroomCell,
   isShiftManagedCell,
   ITEM_SPAWN_POINTS,
@@ -31,25 +35,30 @@ import {
   createBreakerBoxModel,
   createChandelierModel,
   createDoorAssembly,
+  createDrapedTableGeometry,
   createEchoCorpseModel,
   createGlassShardModel,
+  createHauntedMirrorAssembly,
   createKitchenIslandModel,
   createKnockableModel,
   createLockerDoorHandle,
   createLockerShellGeometry,
+  createLoreItemModel,
   createMarblePillarGeometry,
   createMezzanineRailingGeometry,
   createPhantomSilhouetteModel,
   createPickupModel,
-  createRedShiftDoorModel,
+  createRotaryPhoneModel,
   createSheetedFurnitureGeometry,
   createStaircaseFlightMesh,
   createSteamValveModel,
   createThreatModel,
+  createThrowableModel,
   createWardrobeDoorHandle,
   createWardrobeShellGeometry,
   DoorModelHandle,
   LockerModelHandle,
+  MirrorModelHandle,
   SteamValveHandle,
   ThreatModelHandle,
 } from '../game/models';
@@ -60,6 +69,7 @@ import {
   SimulationState,
   stepSimulation,
 } from '../game/rules';
+import { GameSettings } from '../game/settings';
 import {
   createBloodDragDecalTexture,
   createCeilingTexture,
@@ -87,11 +97,15 @@ export interface HospitalController {
   triggerInteract: () => void;
   triggerCrouch: () => void;
   triggerGlasses: () => void;
+  triggerThrow: () => void;
+  triggerFlashlight: () => void;
+  dismissLore: () => void;
   selectSlot: (slotIndex: number) => void;
 }
 
 interface HospitalViewportProps {
   autostart: boolean;
+  settings: GameSettings;
   mobileInputRef: React.MutableRefObject<MobileControlState>;
   controllerRef: React.MutableRefObject<HospitalController | null>;
   onHudUpdate: (snapshot: GameHudSnapshot) => void;
@@ -104,6 +118,7 @@ const PITCH_CLAMP = 1.3;
 
 export const HospitalViewport: React.FC<HospitalViewportProps> = ({
   autostart,
+  settings,
   mobileInputRef,
   controllerRef,
   onHudUpdate,
@@ -112,8 +127,16 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
   const mountRef = useRef<HTMLDivElement | null>(null);
   const onHudUpdateRef = useRef(onHudUpdate);
   const onMuteChangeRef = useRef(onMuteChange);
+  const settingsRef = useRef(settings);
+  const audioRef = useRef<HorrorAudioEngine | null>(null);
+
   onHudUpdateRef.current = onHudUpdate;
   onMuteChangeRef.current = onMuteChange;
+
+  useEffect(() => {
+    settingsRef.current = settings;
+    audioRef.current?.setVolumes(settings.sfxVolume, settings.ambientVolume);
+  }, [settings]);
 
   useEffect(() => {
     const container = mountRef.current;
@@ -160,10 +183,13 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     scene.background = new THREE.Color(0x05070a);
     scene.fog = new THREE.FogExp2(0x05070a, 0.08);
 
-    const camera = new THREE.PerspectiveCamera(68, width / height, 0.1, 48);
+    const camera = new THREE.PerspectiveCamera(settingsRef.current.fov, width / height, 0.1, 48);
     camera.rotation.order = 'YXZ';
 
     const audio = new HorrorAudioEngine();
+    audio.setVolumes(settingsRef.current.sfxVolume, settingsRef.current.ambientVolume);
+    audioRef.current = audio;
+
     const maxAniso = Math.min(4, renderer.capabilities.getMaxAnisotropy());
 
     // Minimal ambient light + single camera-attached Flashlight SpotLight
@@ -315,7 +341,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     buildWallInst(f1BoilerWalls, 0, boilerWallMat);
     buildWallInst(f2Walls, FLOOR2_Y, wallMat);
 
-    // Dynamic Architecture Shift Wall Meshes (toggled live by sim.shifts.gridOverrides)
+    // Dynamic Architecture + Procedural Wing Shift Wall Meshes (toggled live by sim.shifts.gridOverrides)
     const shiftWallMeshes = new Map<string, { floor: 0 | 1; col: number; row: number; mesh: THREE.Mesh }>();
     SHIFT_MANAGED_CELLS.forEach((sc) => {
       const mat = sc.floor === 0 && sc.col <= 6 ? boilerWallMat : wallMat;
@@ -335,30 +361,16 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       });
     });
 
-    // Non-Euclidean Red Door inside Endless Corridor (Floor 2, Row 1, Col 9)
-    const redShiftDoor = createRedShiftDoorModel(TILE_SIZE, FLOOR_HEIGHT);
-    redShiftDoor.position.set(
-      (ENDLESS_CORRIDOR_BOUNDS.redDoorGridX + 0.5) * TILE_SIZE,
-      FLOOR2_Y,
-      (ENDLESS_CORRIDOR_BOUNDS.redDoorGridZ + 0.5) * TILE_SIZE
-    );
-    redShiftDoor.rotation.y = Math.PI / 2;
-    redShiftDoor.visible = false;
-    scene.add(redShiftDoor);
-
     // 3 Functional Wooden Staircases (Y=0 <-> Y=3.5)
-    // 1. Main Staircase: col 11, z in [12, 18] (South z=18 Y=0 -> North z=12 Y=3.5)
     const mainStairs = createStaircaseFlightMesh(FLOOR2_Y, 6.0, 1.92, 14);
     mainStairs.position.set(11.5 * TILE_SIZE, 0, 15.0);
     scene.add(mainStairs);
 
-    // 2. West Service / Cellar Staircase: col 2, z in [18, 24] (North z=18 Y=0 -> South z=24 Y=3.5)
     const westStairs = createStaircaseFlightMesh(FLOOR2_Y, 6.0, 1.92, 14);
     westStairs.position.set(2.5 * TILE_SIZE, 0, 21.0);
     westStairs.rotation.y = Math.PI;
     scene.add(westStairs);
 
-    // 3. Library Grand Staircase: col 21, z in [24, 30] (South z=30 Y=0 -> North z=24 Y=3.5)
     const libraryStairs = createStaircaseFlightMesh(FLOOR2_Y, 6.0, 1.92, 14);
     libraryStairs.position.set(21.5 * TILE_SIZE, 0, 27.0);
     scene.add(libraryStairs);
@@ -623,7 +635,28 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     // Static contact shadows pool
     const staticShadows: Array<{ x: number; y: number; z: number; r: number }> = [];
 
-    // Floor 1 Kitchen Island Counter (loop around to break sight!)
+    // Draped Hiding Tables (crouch beneath for cover!)
+    const hideTableMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.86,
+      metalness: 0.08,
+    });
+    HIDE_TABLES.forEach((tbl) => {
+      const tblW = tbl.maxX - tbl.minX;
+      const tblD = tbl.maxZ - tbl.minZ;
+      const tblMesh = new THREE.Mesh(
+        createDrapedTableGeometry(tblW, tblD, tbl.kind),
+        hideTableMat
+      );
+      const tblY = tbl.floor === 1 ? FLOOR2_Y : 0;
+      const cx = (tbl.minX + tbl.maxX) * 0.5;
+      const cz = (tbl.minZ + tbl.maxZ) * 0.5;
+      tblMesh.position.set(cx, tblY, cz);
+      scene.add(tblMesh);
+      staticShadows.push({ x: cx, y: tblY, z: cz, r: Math.max(tblW, tblD) * 0.62 });
+    });
+
+    // Floor 1 Kitchen Island Counter
     const kitchenCounter = createKitchenIslandModel(3.1, 3.4);
     kitchenCounter.position.set(2.95 * TILE_SIZE, 0, 19.0 * TILE_SIZE);
     scene.add(kitchenCounter);
@@ -776,6 +809,49 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       staticShadows.push({ x: kp.x, y: kp.y, z: kp.z, r: 0.42 });
     });
 
+    // Haunted Mirrors
+    const mirrorHandles = new Map<string, MirrorModelHandle>();
+    HAUNTED_MIRRORS.forEach((m) => {
+      const mh = createHauntedMirrorAssembly();
+      mh.group.position.set(m.x, m.y, m.z);
+      mh.group.rotation.y = -m.facingYaw;
+      scene.add(mh.group);
+      mirrorHandles.set(m.id, mh);
+    });
+
+    // Rotary Telephones (pedestal phone in Endless Corridor + wall phones in Ballroom & Upper Hall)
+    const phoneMeshes = new Map<string, THREE.Group>();
+    INITIAL_ROTARY_PHONES.forEach((p) => {
+      const pm = createRotaryPhoneModel(Boolean(p.isLoopTrigger));
+      const mountY = p.isLoopTrigger ? p.y : p.y + 1.08;
+      pm.position.set(p.x, mountY, p.z);
+      pm.rotation.y = p.wallFacingYaw;
+      scene.add(pm);
+      phoneMeshes.set(p.id, pm);
+      if (p.isLoopTrigger) {
+        staticShadows.push({ x: p.x, y: p.y, z: p.z, r: 0.48 });
+      }
+    });
+
+    // Throwable Bottles & Tin Cans
+    const throwableMeshes = new Map<string, THREE.Group>();
+    INITIAL_THROWABLES.forEach((t) => {
+      const tmModel = createThrowableModel(t.kind);
+      tmModel.position.set(t.x, t.y, t.z);
+      scene.add(tmModel);
+      throwableMeshes.set(t.id, tmModel);
+    });
+    const projectileMeshes = new Map<number, THREE.Group>();
+
+    // Inspectable Lore Collectibles (Diaries, Backwards Watches, Polaroids)
+    const loreMeshes = new Map<string, THREE.Group>();
+    INITIAL_LORE_ITEMS.forEach((l) => {
+      const lm = createLoreItemModel(l.kind);
+      lm.position.set(l.x, l.y + 0.01, l.z);
+      scene.add(lm);
+      loreMeshes.set(l.id, lm);
+    });
+
     // Single InstancedMesh for ALL static furniture contact shadows (1 draw call)
     const staticShadowGeo = new THREE.CircleGeometry(1, 14);
     staticShadowGeo.rotateX(-Math.PI / 2);
@@ -828,7 +904,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       shardMeshes.set(sh.id, { group: model, baseY: sh.surfaceY });
     });
 
-    // The Resident (with Spectral X-Ray Silhouette) + Triangle Echo Corpse + Phantom Echo
+    // The Resident (with Glowing Crimson Pinpoint Eyes & Spectral X-Ray Silhouette) + Echoes + Paranoia Eyes
     const threatModel: ThreatModelHandle = createThreatModel(shadowTex);
     scene.add(threatModel.group);
 
@@ -839,6 +915,18 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     const phantomModel = createPhantomSilhouetteModel();
     phantomModel.visible = false;
     scene.add(phantomModel);
+
+    const ghostEyesGroup = new THREE.Group();
+    const ghostEyeMat = new THREE.MeshBasicMaterial({ color: 0xff2600, fog: false, toneMapped: false });
+    const gEyeGeo = new THREE.SphereGeometry(0.024, 8, 8);
+    const gLeft = new THREE.Mesh(gEyeGeo, ghostEyeMat);
+    gLeft.position.set(-0.058, 0, 0);
+    const gRight = new THREE.Mesh(gEyeGeo, ghostEyeMat);
+    gRight.position.set(0.058, 0, 0);
+    const gLight = new THREE.PointLight(0xff2200, 1.3, 3.0);
+    ghostEyesGroup.add(gLeft, gRight, gLight);
+    ghostEyesGroup.visible = false;
+    scene.add(ghostEyesGroup);
 
     if (!isSoftwareGl) {
       renderer.compile(scene, camera);
@@ -852,6 +940,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       loopCount: loopCounter,
       seed: Math.floor(Date.now() % 90000) + 137,
       previousEcho: savedEcho,
+      randomizeSpawn: true,
     });
     document.body.dataset.state = sim.phase;
 
@@ -861,6 +950,8 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     let interactQueued = false;
     let crouchQueued = false;
     let glassesQueued = false;
+    let throwQueued = false;
+    let flashlightQueued = false;
 
     let isPointerDragging = false;
     let lastPointerX = 0;
@@ -878,18 +969,34 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     let smoothedPitch = sim.player.pitch;
     let cameraTrauma = 0;
     let quakeBlackoutTimer = 0;
+    let phoneRingAudioCooldown = 0;
     let currentEyeHeight = 1.62;
-    let currentFov = 68;
+    let currentFov = settingsRef.current.fov;
     let lastHudEmitTime = 0;
     let lastHudKey = '';
     let disposed = false;
     let frameId = 0;
 
+    const clearProjectilesVisual = () => {
+      projectileMeshes.forEach((mesh) => {
+        scene.remove(mesh);
+        mesh.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) {
+            const m = o as THREE.Mesh;
+            m.geometry?.dispose();
+            if (Array.isArray(m.material)) m.material.forEach((mat) => mat.dispose());
+            else m.material?.dispose();
+          }
+        });
+      });
+      projectileMeshes.clear();
+    };
+
     const emitHud = (force = false) => {
       const snap = buildHudSnapshot(sim);
-      const key = `${snap.phase}|${snap.victory}|${snap.loopCount}|${snap.strikesRemaining}|${snap.stamina}|${snap.crouching}|${snap.hiding}|${snap.currentFloor}|${snap.steamShutOff}|${snap.powerRestored}|${snap.inventory.join(',')}|${snap.selectedSlot}|${snap.currentZone}|${snap.promptText}|${snap.objectiveText}|${snap.statusBanner}|${snap.echoNoteText}|${snap.glassesActive}|${Math.ceil(snap.glassesCooldownLeft)}|${snap.glassShardsCollected}|${snap.quakeTriggered}|${snap.endlessLoopActive}|${Math.round(snap.dangerLevel * 20)}`;
+      const key = `${snap.phase}|${snap.victory}|${snap.loopCount}|${snap.strikesRemaining}|${snap.stamina}|${snap.crouching}|${snap.isUnderTable}|${snap.hiding}|${snap.currentFloor}|${snap.steamShutOff}|${snap.powerRestored}|${snap.inventory.join(',')}|${snap.selectedSlot}|${snap.bottlesCount}|${snap.flashlightOn}|${snap.battery}|${snap.currentZone}|${snap.promptText}|${snap.objectiveText}|${snap.statusBanner}|${snap.echoNoteText}|${snap.loreFound}|${Boolean(snap.loreOverlay)}|${snap.glassesActive}|${Math.ceil(snap.glassesCooldownLeft)}|${snap.glassShardsCollected}|${snap.quakeTriggered}|${snap.endlessLoopActive}|${snap.phoneRinging}|${Math.round(snap.radioStaticLevel * 20)}|${snap.radioMessage}|${Math.round(snap.dangerLevel * 20)}`;
       const now = performance.now();
-      if (force || key !== lastHudKey || now - lastHudEmitTime >= 160) {
+      if (force || key !== lastHudKey || now - lastHudEmitTime >= 150) {
         lastHudKey = key;
         lastHudEmitTime = now;
         document.body.dataset.state = sim.phase;
@@ -914,13 +1021,26 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
           entry.baseY = shard.surfaceY;
         }
       }
+      for (const t of sim.throwables) {
+        const mesh = throwableMeshes.get(t.id);
+        if (mesh) {
+          mesh.visible = !t.collected;
+        }
+      }
 
-      // Sync Shift-Managed Wall Meshes & Doors
+      // Sync Shift-Managed + Procedural Wall Meshes & Doors
       shiftWallMeshes.forEach((entry) => {
         entry.mesh.visible = isWallCell(entry.col, entry.row, entry.floor, sim.shifts.gridOverrides);
       });
-      redShiftDoor.visible =
-        sim.shifts.endlessLoopActive && sim.shifts.redDoorAppeared && !sim.shifts.endlessLoopSolved;
+
+      // Sync Rotary Phones (Endless Corridor phone spawns when loop activates)
+      for (const p of sim.phones) {
+        const pm = phoneMeshes.get(p.id);
+        if (!pm) continue;
+        pm.visible = p.isLoopTrigger
+          ? sim.shifts.endlessLoopActive || sim.shifts.endlessLoopSolved
+          : true;
+      }
 
       for (const door of sim.doors) {
         const handle = doorHandles.get(door.id);
@@ -971,11 +1091,13 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
         loopCounter += 1;
       }
 
+      clearProjectilesVisual();
       sim = createInitialSimulation({
         autostart: true,
         loopCount: loopCounter,
         seed: Math.floor(performance.now() * 17 + loopCounter * 4099) >>> 0,
         previousEcho: savedEcho,
+        randomizeSpawn: true,
       });
       keysPressed.clear();
       pendingYawDelta = 0;
@@ -983,14 +1105,17 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       interactQueued = false;
       crouchQueued = false;
       glassesQueued = false;
+      throwQueued = false;
+      flashlightQueued = false;
       activeLookTouchId = null;
       smoothedYaw = sim.player.yaw;
       smoothedPitch = sim.player.pitch;
       cameraTrauma = 0;
       quakeBlackoutTimer = 0;
+      phoneRingAudioCooldown = 0;
       currentEyeHeight = 1.62;
-      currentFov = 68;
-      camera.fov = 68;
+      currentFov = settingsRef.current.fov;
+      camera.fov = currentFov;
       camera.updateProjectionMatrix();
 
       knockableMeshes.forEach((mesh) => {
@@ -1048,6 +1173,19 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
         audio.unlock();
         glassesQueued = true;
       },
+      triggerThrow: () => {
+        audio.unlock();
+        throwQueued = true;
+      },
+      triggerFlashlight: () => {
+        audio.unlock();
+        flashlightQueued = true;
+      },
+      dismissLore: () => {
+        sim.loreOverlay = null;
+        sim.loreOverlayTimer = 0;
+        emitHud(true);
+      },
       selectSlot: (slotIndex: number) => {
         if (slotIndex >= 0 && slotIndex < sim.inventory.length) {
           sim.selectedSlot = slotIndex;
@@ -1059,7 +1197,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     syncVisualStateToSim();
     emitHud(true);
 
-    // Keyboard & Pointer Events
+    // Keyboard & Pointer Events (KeyR intentionally REMOVED to prevent accidental wipes!)
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'KeyM') {
         const next = controllerRef.current?.toggleMute();
@@ -1069,7 +1207,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       if (sim.phase === 'title') {
         if (e.code === 'Enter' || e.code === 'Space') {
           e.preventDefault();
-          startNewRun(false, false);
+          startNewRun(false, true);
         }
         return;
       }
@@ -1083,11 +1221,6 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
           setPhase('playing');
           return;
         }
-      }
-      if (e.code === 'KeyR' && (sim.phase === 'playing' || sim.phase === 'paused' || sim.phase === 'gameover')) {
-        e.preventDefault();
-        startNewRun(false, false);
-        return;
       }
       if (sim.phase !== 'playing') return;
 
@@ -1104,6 +1237,16 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
         e.preventDefault();
         audio.unlock();
         glassesQueued = true;
+      }
+      if (e.code === 'KeyF' && !e.repeat) {
+        e.preventDefault();
+        audio.unlock();
+        throwQueued = true;
+      }
+      if (e.code === 'KeyT' && !e.repeat) {
+        e.preventDefault();
+        audio.unlock();
+        flashlightQueued = true;
       }
       if (e.code === 'Digit1') controllerRef.current?.selectSlot(0);
       if (e.code === 'Digit2') controllerRef.current?.selectSlot(1);
@@ -1128,10 +1271,18 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     };
 
     const canvas = renderer.domElement;
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
     const onMouseDown = (e: MouseEvent) => {
       if (sim.phase !== 'playing') return;
       if (performance.now() - lastTouchTime < 600) return;
       audio.unlock();
+      if (e.button === 2) {
+        e.preventDefault();
+        throwQueued = true;
+        return;
+      }
       isPointerDragging = true;
       lastPointerX = e.clientX;
       lastPointerY = e.clientY;
@@ -1164,7 +1315,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       isPointerDragging = false;
     };
 
-    // Fixed Touch Camera Look: strict identifier tracking + >50px jump rejection + 0.003 sensitivity
+    // Strict Touch Camera Look: identifier tracking + >50px jump rejection + 0.003 sensitivity
     const onTouchStart = (e: TouchEvent) => {
       lastTouchTime = performance.now();
       if (sim.phase !== 'playing') return;
@@ -1225,6 +1376,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('resize', onResize);
+    canvas.addEventListener('contextmenu', onContextMenu);
     canvas.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     canvas.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -1265,7 +1417,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
       elapsedTotal += dt;
 
-      // Pickup & Glass Shard gentle bob & rotation
+      // Pickup, Shard & Lore gentle bob/shimmer
       itemMeshes.forEach((entry, id) => {
         if (entry.group.visible) {
           entry.group.position.y = entry.baseY + Math.sin(elapsedTotal * 2.5 + id.length) * 0.032;
@@ -1280,7 +1432,6 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       });
 
       if (sim.phase === 'title') {
-        // Eerie sweep inside Entrance Hall peering into the cavernous Grand Ballroom!
         const zTravel = 20.1 * TILE_SIZE - ((elapsedTotal * 0.25) % (2.0 * TILE_SIZE));
         camera.position.set(
           11.5 * TILE_SIZE + Math.sin(elapsedTotal * 0.45) * 0.16,
@@ -1288,7 +1439,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
           zTravel
         );
         camera.rotation.set(0.02, Math.sin(elapsedTotal * 0.35) * 0.12, 0);
-        flashlight.intensity = 22;
+        flashlight.intensity = 22 * settingsRef.current.flashlightIntensity;
         threatModel.group.position.set(sim.threat.x, sim.threat.y, sim.threat.z);
         threatModel.group.rotation.y = sim.threat.yaw;
       } else if (sim.phase === 'jumpscare') {
@@ -1303,26 +1454,28 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
             yawDelta: 0,
             pitchDelta: 0,
           },
-          dt
+          dt,
+          settingsRef.current
         );
-        if (events.defeated) {
-          const snapZone = buildHudSnapshot(sim).currentZone;
+        if (events.rebirthStarted) {
           savedEcho = {
             loopNumber: sim.loopCount,
             deathX: sim.player.x,
             deathY: sim.player.y,
             deathZ: sim.player.z,
-            noteText: `Loop #${sim.loopCount}: She cornered me near ${snapZone.replace('_', ' ')}. Close doors behind you.`,
+            noteText: `Loop #${sim.loopCount}: ${sim.lastDeathReason}`,
             inspected: false,
           };
           audio.setAmbienceActive(false);
+          audio.playRebirthBreathing();
           if (document.pointerLockElement) {
             document.exitPointerLock?.();
           }
         }
 
+        // Camera snaps directly onto Resident's unhinging devour jaw & piercing eyes
         const p = sim.jumpscareProgress;
-        const lungeDist = 1.0 - p * 0.44;
+        const lungeDist = 0.88 - p * 0.44;
         const fx = -Math.sin(sim.player.yaw);
         const fz = -Math.cos(sim.player.yaw);
         threatModel.group.position.set(
@@ -1331,20 +1484,48 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
           sim.player.z + fz * lungeDist
         );
         threatModel.group.rotation.y = sim.player.yaw + Math.PI;
-        threatModel.head.rotation.z = Math.sin(elapsedTotal * 48) * 0.25;
-        threatModel.jaw.rotation.x = 0.58;
-        threatModel.rightArm.rotation.x = -1.6 + Math.sin(elapsedTotal * 30) * 0.3;
-        threatModel.eyeMat.emissiveIntensity = 4.2;
+        threatModel.head.rotation.z = Math.sin(elapsedTotal * 52) * 0.22;
+        threatModel.jaw.rotation.x = 0.45 + p * 0.72;
+        threatModel.jaw.position.y = 0.12 - p * 0.05;
+        threatModel.rightArm.rotation.x = -1.6 + Math.sin(elapsedTotal * 32) * 0.35;
+        threatModel.eyeLight.intensity = 3.2;
 
-        const jitterX = Math.sin(elapsedTotal * 70) * 0.04;
-        const jitterY = Math.cos(elapsedTotal * 63) * 0.04;
+        const jitterX = Math.sin(elapsedTotal * 72) * 0.036;
+        const jitterY = Math.cos(elapsedTotal * 65) * 0.036;
         camera.position.set(sim.player.x + jitterX, sim.player.y + 1.62 + jitterY, sim.player.z);
         camera.lookAt(
           threatModel.group.position.x,
-          sim.player.y + 2.02,
+          sim.player.y + 1.98,
           threatModel.group.position.z
         );
-        flashlight.intensity = 18;
+        flashlight.intensity = 20 * settingsRef.current.flashlightIntensity;
+        emitHud(true);
+      } else if (sim.phase === 'rebirth') {
+        const events = stepSimulation(
+          sim,
+          {
+            moveForward: 0,
+            moveRight: 0,
+            sprint: false,
+            crouchToggle: false,
+            interactPressed: false,
+            yawDelta: 0,
+            pitchDelta: 0,
+          },
+          dt,
+          settingsRef.current
+        );
+        flashlight.intensity = 0;
+        threatModel.jaw.position.y = 0.12;
+        if (events.rebirthCompleted) {
+          loopCounter = sim.loopCount;
+          savedEcho = sim.echoRecord ? { ...sim.echoRecord } : null;
+          smoothedYaw = sim.player.yaw;
+          smoothedPitch = sim.player.pitch;
+          currentEyeHeight = 1.62;
+          audio.setAmbienceActive(true);
+          syncVisualStateToSim();
+        }
         emitHud(true);
       } else if (sim.phase === 'playing') {
         let moveForward =
@@ -1368,16 +1549,21 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
             crouchToggle: crouchQueued,
             interactPressed: interactQueued,
             glassesToggle: glassesQueued,
+            throwPressed: throwQueued,
+            flashlightToggle: flashlightQueued,
             yawDelta: pendingYawDelta,
             pitchDelta: pendingPitchDelta,
           },
-          dt
+          dt,
+          settingsRef.current
         );
         pendingYawDelta = 0;
         pendingPitchDelta = 0;
         interactQueued = false;
         crouchQueued = false;
         glassesQueued = false;
+        throwQueued = false;
+        flashlightQueued = false;
 
         // Audio & Spatial triggers (42m estate-wide acoustic radius!)
         const floorAtten = Math.abs(sim.threat.y - sim.player.y) > 2.0 ? 0.52 : 1.0;
@@ -1398,7 +1584,38 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
         }
         if (events.creakyBoard) audio.playCreakyBoard();
         if (events.propKnocked) audio.playPropCrash();
-        if (events.pickup || events.shardPickup) audio.playPickup();
+        if (events.pickup || events.shardPickup || events.throwablePickup || events.loreInspected) {
+          audio.playPickup();
+        }
+        if (events.bottleShattered) {
+          const sp = audio.computeSpatial(
+            sim.player.x,
+            sim.player.z,
+            sim.player.yaw,
+            events.bottleShattered.x,
+            events.bottleShattered.z,
+            34
+          );
+          audio.playBottleShatter(sp.pan, Math.max(0.35, sp.atten));
+        }
+        if (events.ghostFootstepsBehind) {
+          audio.playGhostFootstepsBehind();
+        }
+        if (events.phoneRinging) {
+          const ringingPhone = sim.phones.find((p) => p.ringing);
+          if (ringingPhone) {
+            const sp = audio.computeSpatial(
+              sim.player.x,
+              sim.player.z,
+              sim.player.yaw,
+              ringingPhone.x,
+              ringingPhone.z,
+              30
+            );
+            audio.playPhoneRing(sp.pan, Math.max(0.2, sp.atten));
+            phoneRingAudioCooldown = 2.6;
+          }
+        }
         if (events.glassesToggled) audio.setSpectralGlassesActive(sim.glasses.active);
         if (events.midnightQuake) {
           audio.playMidnightQuake();
@@ -1431,14 +1648,65 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
           cameraTrauma = 1.0;
         }
         if (events.jumpscareStarted) {
-          audio.playJumpscareScreech();
+          audio.playDevourCrunch();
         }
         if (events.escaped) {
           audio.playVictory();
           audio.setAmbienceActive(false);
         }
 
+        // Periodic ring sound while a phone is actively ringing nearby
+        if (phoneRingAudioCooldown > 0) phoneRingAudioCooldown -= dt;
+        else {
+          const ringingPhone = sim.phones.find(
+            (p) => p.ringing && (!p.isLoopTrigger || sim.shifts.endlessLoopActive)
+          );
+          if (ringingPhone) {
+            const sp = audio.computeSpatial(
+              sim.player.x,
+              sim.player.z,
+              sim.player.yaw,
+              ringingPhone.x,
+              ringingPhone.z,
+              28
+            );
+            if (sp.atten > 0.05) {
+              audio.playPhoneRing(sp.pan, sp.atten);
+            }
+            phoneRingAudioCooldown = 2.8;
+          }
+        }
+
         syncVisualStateToSim();
+
+        // Sync Flying Projectiles
+        const activeProjIds = new Set<number>();
+        for (const proj of sim.projectiles) {
+          activeProjIds.add(proj.id);
+          let mesh = projectileMeshes.get(proj.id);
+          if (!mesh) {
+            mesh = createThrowableModel(proj.kind);
+            scene.add(mesh);
+            projectileMeshes.set(proj.id, mesh);
+          }
+          mesh.position.set(proj.x, proj.y, proj.z);
+          mesh.rotation.x += dt * 11;
+          mesh.rotation.z += dt * 8;
+        }
+        projectileMeshes.forEach((mesh, pid) => {
+          if (!activeProjIds.has(pid)) {
+            scene.remove(mesh);
+            mesh.traverse((o) => {
+              if ((o as THREE.Mesh).isMesh) {
+                const m = o as THREE.Mesh;
+                m.geometry?.dispose();
+                if (Array.isArray(m.material)) m.material.forEach((mat) => mat.dispose());
+                else m.material?.dispose();
+              }
+            });
+            projectileMeshes.delete(pid);
+          }
+        });
 
         // Animate Doors
         for (const door of sim.doors) {
@@ -1464,6 +1732,38 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
           mesh.rotation.z += (targetRot - mesh.rotation.z) * Math.min(1, dt * 9);
         });
 
+        // Animate Ringing Rotary Phones vibration
+        sim.phones.forEach((p) => {
+          const pm = phoneMeshes.get(p.id);
+          if (!pm || !pm.visible) return;
+          pm.rotation.z = p.ringing ? Math.sin(elapsedTotal * 48) * 0.035 : 0;
+        });
+
+        // Animate Haunted Mirrors (lagging silhouette + crimson eye haunt flash)
+        HAUNTED_MIRRORS.forEach((m) => {
+          const mh = mirrorHandles.get(m.id);
+          if (!mh) return;
+          let yawDelta = sim.paranoia.mirrorLagYaw - sim.player.yaw;
+          while (yawDelta > Math.PI) yawDelta -= Math.PI * 2;
+          while (yawDelta < -Math.PI) yawDelta += Math.PI * 2;
+          mh.reflectionSilhouette.position.x = Math.max(-0.22, Math.min(0.22, yawDelta * 0.28));
+          mh.hauntEyes.visible =
+            sim.paranoia.mirrorHauntTimer > 0 && sim.paranoia.mirrorHauntedId === m.id;
+        });
+
+        // Animate Auditory Paranoia Phantom Eyes
+        if (sim.paranoia.ghostEyeFlashTimer > 0) {
+          ghostEyesGroup.visible = true;
+          ghostEyesGroup.position.set(
+            sim.paranoia.ghostEyeX,
+            sim.paranoia.ghostEyeY,
+            sim.paranoia.ghostEyeZ
+          );
+          ghostEyesGroup.lookAt(camera.position);
+        } else {
+          ghostEyesGroup.visible = false;
+        }
+
         // Animate Phantom Echo
         if (sim.phantomEcho.active) {
           phantomModel.visible = true;
@@ -1473,7 +1773,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
           phantomModel.visible = false;
         }
 
-        // Animate The Resident (including inspect_room slow look & door-smashing lunge)
+        // Animate The Resident + Glowing Hollow Eyes
         const limpPhase = sim.threat.stepAccum * 4.5;
         const swing = sim.threat.mode === 'inspect_room' ? 0 : Math.sin(limpPhase) * 0.46;
         const limpDrop =
@@ -1495,21 +1795,32 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
         const twitch = Math.sin(elapsedTotal * 23) * Math.cos(elapsedTotal * 37) > 0.85 ? 0.18 : 0;
         threatModel.head.rotation.z =
           0.22 + sim.threat.headTilt + twitch + Math.sin(elapsedTotal * (sim.threat.mode === 'chase' ? 10 : 2.5)) * 0.06;
+        threatModel.jaw.position.y = 0.12;
         threatModel.jaw.rotation.x = sim.threat.mode === 'chase' || sim.threat.mode === 'smash_door' ? 0.24 : 0.04;
-        threatModel.eyeMat.emissiveIntensity = sim.threat.mode === 'chase' ? 3.1 : 1.9;
+        threatModel.eyeLight.intensity =
+          sim.threat.mode === 'chase'
+            ? 1.85 + Math.sin(elapsedTotal * 24) * 0.28
+            : 1.15 + Math.sin(elapsedTotal * 7) * 0.15;
 
-        // Smooth First-person Camera + Vertical Floor Elevation + Hiding Peek
+        // Smooth First-person Camera + Vertical Floor Elevation + Under-Table & Locker Height + Live FOV
         const hideSpot = sim.player.hidingSpotId
           ? HIDE_SPOTS.find((h) => h.id === sim.player.hidingSpotId)
           : null;
-        const targetEyeOffset = hideSpot
-          ? hideSpot.eyeHeight
-          : sim.player.crouching
-            ? 0.96
-            : 1.62;
+        const targetEyeOffset = sim.player.isUnderTable
+          ? 0.55
+          : hideSpot
+            ? hideSpot.eyeHeight
+            : sim.player.crouching
+              ? 0.96
+              : 1.62;
         currentEyeHeight += (targetEyeOffset - currentEyeHeight) * (1 - Math.exp(-12 * dt));
 
-        const targetFov = hideSpot ? 52 : sim.glasses.active ? 73 : 68;
+        const baseFov = settingsRef.current.fov;
+        const targetFov = hideSpot
+          ? Math.max(50, baseFov - 18)
+          : sim.glasses.active
+            ? Math.min(102, baseFov + 5)
+            : baseFov;
         currentFov += (targetFov - currentFov) * (1 - Math.exp(-9 * dt));
         if (Math.abs(camera.fov - currentFov) > 0.06) {
           camera.fov = currentFov;
@@ -1537,26 +1848,47 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
 
         const hudSnap = buildHudSnapshot(sim);
 
-        // Flashlight flicker near Threat OR momentary blackout on Midnight Quake
-        if (quakeBlackoutTimer > 0) {
+        // Flashlight Intensity + Battery Level + Threat Proximity Flicker + Midnight Quake Blackout
+        if (!sim.player.flashlightOn) {
+          flashlight.intensity = 0;
+        } else if (quakeBlackoutTimer > 0) {
           quakeBlackoutTimer = Math.max(0, quakeBlackoutTimer - dt);
-          flashlight.intensity = quakeBlackoutTimer > 0.3 ? 1.2 : Math.sin(elapsedTotal * 55) > 0 ? 18 : 2.5;
+          flashlight.intensity =
+            (quakeBlackoutTimer > 0.3 ? 1.2 : Math.sin(elapsedTotal * 55) > 0 ? 18 : 2.5) *
+            settingsRef.current.flashlightIntensity;
         } else {
+          const lowBatDim = sim.player.battery < 18 ? 0.45 + 0.55 * (sim.player.battery / 18) : 1.0;
+          const flickerThreshold = sim.player.battery < 16 ? 0.45 : hudSnap.dangerLevel > 0.5 ? 0.62 : 0.9;
           const batDip =
-            Math.sin(elapsedTotal * 31) * Math.cos(elapsedTotal * 19) >
-            (hudSnap.dangerLevel > 0.5 ? 0.62 : 0.9)
+            Math.sin(elapsedTotal * 31) * Math.cos(elapsedTotal * 19) > flickerThreshold
               ? 0.55
               : 1.0;
-          flashlight.intensity = (hideSpot ? 14 : 22) * batDip;
+          flashlight.intensity =
+            (hideSpot ? 14 : 22) * settingsRef.current.flashlightIntensity * batDip * lowBatDim;
         }
 
-        audio.updateAdaptiveScore(dt, hudSnap.dangerLevel, sim.threat.mode === 'chase');
+        const isBasement = hudSnap.currentZone === 'boiler' || hudSnap.currentZone === 'west_cellar';
+        audio.updateAdaptiveScore(
+          dt,
+          hudSnap.dangerLevel,
+          sim.threat.mode === 'chase',
+          hudSnap.radioStaticLevel,
+          isBasement
+        );
         emitHud(
           events.escaped ||
             events.defeated ||
             events.playerHit ||
+            events.jumpscareStarted ||
             Boolean(events.pickup) ||
             events.shardPickup ||
+            events.throwablePickup ||
+            events.bottleThrown ||
+            Boolean(events.bottleShattered) ||
+            events.loreInspected ||
+            events.phoneAnswered ||
+            events.phoneRinging ||
+            events.radioWhisper ||
             events.glassesToggled ||
             events.midnightQuake ||
             Boolean(events.architectureShift) ||
@@ -1585,6 +1917,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
 
     return () => {
       disposed = true;
+      audioRef.current = null;
       cancelAnimationFrame(frameId);
       clearTimeout(frameId);
 
@@ -1594,6 +1927,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('resize', onResize);
+      canvas.removeEventListener('contextmenu', onContextMenu);
       canvas.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
       canvas.removeEventListener('touchstart', onTouchStart);
@@ -1602,6 +1936,7 @@ export const HospitalViewport: React.FC<HospitalViewportProps> = ({
       window.removeEventListener('touchcancel', onTouchEnd);
       canvas.removeEventListener('webglcontextlost', onContextLost);
 
+      clearProjectilesVisual();
       audio.dispose();
       foyerFloorTex.map.dispose();
       foyerFloorTex.bumpMap.dispose();

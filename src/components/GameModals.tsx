@@ -4,6 +4,7 @@ import { GameHudSnapshot } from '../game/types';
 interface PauseModalProps {
   loopCount: number;
   onResume: () => void;
+  onOpenSettings: () => void;
   onRestart: () => void;
   onTitle: () => void;
 }
@@ -11,11 +12,13 @@ interface PauseModalProps {
 export const PauseModal: React.FC<PauseModalProps> = ({
   loopCount,
   onResume,
+  onOpenSettings,
   onRestart,
   onTitle,
 }) => {
   return (
     <div
+      data-testid="pause-modal"
       className="fixed inset-0 z-30 flex items-center justify-center p-4"
       style={{ backgroundColor: 'rgba(5, 9, 7, 0.8)' }}
     >
@@ -46,10 +49,19 @@ export const PauseModal: React.FC<PauseModalProps> = ({
           </button>
           <button
             type="button"
-            onClick={onRestart}
-            className="min-h-[44px] w-full rounded-lg border border-[#344a3b] hover:border-[#53755d] bg-[#142119] text-[#dbe6dc] font-medium text-sm transition-colors cursor-pointer"
+            data-testid="pause-settings-button"
+            onClick={onOpenSettings}
+            className="min-h-[44px] w-full rounded-lg border border-[#344a3b] hover:border-[#69b879] bg-[#142119] text-[#dbe6dc] font-medium text-sm transition-colors cursor-pointer"
           >
-            Restart Loop
+            Settings
+          </button>
+          <button
+            type="button"
+            data-testid="pause-restart-button"
+            onClick={onRestart}
+            className="min-h-[44px] w-full rounded-lg border border-[#4a3533] hover:border-[#a3534c] bg-[#1c1414] text-[#e6c8c5] font-medium text-sm transition-colors cursor-pointer"
+          >
+            Restart New Run
           </button>
           <button
             type="button"
@@ -115,8 +127,8 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
         </h2>
         <p className="mt-2 text-sm text-[#a8baa9] leading-relaxed">
           {won
-            ? 'You shut off the boiler steam, restored emergency power, severed the exit chains, and broke the cycle.'
-            : 'Your body remains where you fell. Re-enter the next loop with randomized item locations—and find your echo.'}
+            ? `You shut off the boiler steam, restored emergency power, severed the exit chains in ${hud.loopCount} ${hud.loopCount === 1 ? 'cycle' : 'cycles'}, and uncovered ${hud.loreFound}/${hud.loreTotal} memory fragments.`
+            : 'Your body remains where you fell. Re-enter the next cycle.'}
         </p>
 
         {/* Tabular Stats Strip */}
@@ -128,13 +140,13 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
             </div>
           </div>
           <div className="rounded-lg border border-[#28392e] bg-[#131f18] p-3">
-            <div className="text-[11px] uppercase tracking-wider text-[#7f9684]">Items</div>
+            <div className="text-[11px] uppercase tracking-wider text-[#7f9684]">Lore</div>
             <div className="mt-1 font-mono-tabular text-lg font-semibold text-[#e2ece3]">
-              {hud.itemsFound} / 4
+              {hud.loreFound} / {hud.loreTotal}
             </div>
           </div>
           <div className="rounded-lg border border-[#28392e] bg-[#131f18] p-3">
-            <div className="text-[11px] uppercase tracking-wider text-[#7f9684]">Loop</div>
+            <div className="text-[11px] uppercase tracking-wider text-[#7f9684]">Loops</div>
             <div className="mt-1 font-mono-tabular text-lg font-semibold text-[#e2ece3]">
               #{hud.loopCount}
             </div>
@@ -148,7 +160,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
             onClick={onRestart}
             className="min-h-[48px] flex-1 rounded-lg bg-[#69b879] hover:bg-[#7ccc8c] text-[#08120a] font-semibold text-sm transition-colors cursor-pointer"
           >
-            {won ? 'New Timeline' : `Enter Loop #${hud.loopCount + 1}`}
+            New Timeline
           </button>
           {!won && hud.loopCount > 1 && (
             <button
